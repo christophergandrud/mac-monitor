@@ -536,7 +536,7 @@ var _audio=(function(){
     var rg=ctx.createGain();rg.gain.value=0.28;
     rev.connect(rg);rg.connect(comp);
   }
-  function playNote(freq,detune,voiceIdx,atTime,killPrev){
+  function playNote(freq,detune,voiceIdx,atTime,killPrev,oscList){
     init();
     var vi=(voiceIdx||0)%_VOICES.length;
     var t=atTime||ctx.currentTime;
@@ -561,14 +561,17 @@ var _audio=(function(){
       o.connect(g);g.connect(fi);
       o.start(t);o.stop(t+v.dur+0.06);
       if(killPrev)_vOscs[vi].push(o);
+      if(oscList)oscList.push(o);
     });
     ma.gain.setTargetAtTime(0.13,t,0.008);
     ma.gain.setTargetAtTime(0.0001,t+v.dur*0.45,0.04);
   }
+  function scheduleToList(freq,det,vi,at,list){playNote(freq,det,vi,at,false,list);}
   return{
     getCtx:function(){init();return ctx;},
-    hover:function(freq,det,vi){playNote(freq,det,vi,null,true);},
-    schedule:function(freq,det,vi,at){playNote(freq,det,vi,at,false);}
+    hover:function(freq,det,vi){playNote(freq,det,vi,null,true,null);},
+    schedule:function(freq,det,vi,at){playNote(freq,det,vi,at,false,null);},
+    scheduleToList:scheduleToList
   };
 })();
 
@@ -577,10 +580,11 @@ window._htmxBeep=function(freq,detune,voiceIdx){
   _audio.hover(freq,detune,voiceIdx);
 };
 
-// Schedule a chord (array of [freq,det,voice]) at a specific audio timestamp
-function _scheduleChord(notes,atTime){
+// Schedule a chord (array of [freq,det,voice]) at a specific audio timestamp.
+// oscList — optional array; scheduled oscillators are pushed into it for later stop().
+function _scheduleChord(notes,atTime,oscList){
   if(!notes||!notes.length)return;
-  notes.forEach(function(n){_audio.schedule(n[0],n[1],n[2]||0,atTime);});
+  notes.forEach(function(n){_audio.scheduleToList(n[0],n[1],n[2]||0,atTime,oscList||null);});
 }
 
 // ── Cursor overlay ────────────────────────────────────────────────────────────
@@ -622,6 +626,8 @@ function playChart(chartId,btn){
   // Toggle off if same button pressed again
   if(sess){
     cancelAnimationFrame(sess.raf);
+    var _now=_audio.getCtx().currentTime;
+    (sess.oscs||[]).forEach(function(o){try{o.stop(_now);}catch(e){}});
     sess.btn.textContent="[ PLAY ]";
     var cc=_getCursor(chartId);if(cc)cc.style.display='none';
     delete _sessions[chartId];
@@ -640,7 +646,8 @@ function playChart(chartId,btn){
   // Pre-schedule all notes on the Web Audio clock — zero drift at any BPM
   var ctx=_audio.getCtx();
   var t0=ctx.currentTime+0.05;
-  freqs.forEach(function(chord,i){_scheduleChord(chord,t0+i*stepSec);});
+  var sessionOscs=[];
+  freqs.forEach(function(chord,i){_scheduleChord(chord,t0+i*stepSec,sessionOscs);});
 
   var cursor=_getCursor(chartId);
   btn.textContent="[ STOP ]";
@@ -665,8 +672,24 @@ function playChart(chartId,btn){
     }
     _sessions[chartId].raf=requestAnimationFrame(tick);
   }
-  _sessions[chartId]={raf:requestAnimationFrame(tick),btn:btn};
+  _sessions[chartId]={raf:requestAnimationFrame(tick),btn:btn,oscs:sessionOscs};
 }
+
+// Spacebar stops all active playback sessions
+document.addEventListener('keydown',function(e){
+  if(e.code==='Space'&&e.target.tagName!=='INPUT'){
+    e.preventDefault();
+    Object.keys(_sessions).forEach(function(id){
+      var sess=_sessions[id];
+      cancelAnimationFrame(sess.raf);
+      var now=_audio.getCtx().currentTime;
+      (sess.oscs||[]).forEach(function(o){try{o.stop(now);}catch(e){}});
+      sess.btn.textContent='[ PLAY ]';
+      var cc=_getCursor(id);if(cc)cc.style.display='none';
+      delete _sessions[id];
+    });
+  }
+});
 </script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}

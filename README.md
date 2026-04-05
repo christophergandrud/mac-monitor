@@ -8,6 +8,7 @@ A real-time macOS system monitor where the data makes sound. Charts are audible 
 - **Audible graphs** — hover any chart to hear values as pitched sound; each chart has its own frequency register so CPU, memory, and I/O are immediately distinguishable by ear
 - **Chord playback** — PLAY sequences the full history as simultaneous multi-voice chords (all lines fire at once, like piano keys); a white cursor tracks position in the chart
 - **Adjustable BPM** — control playback speed in the menu bar (default 200)
+- **Keyboard shortcut** — spacebar stops all active playback
 - **Pentatonic quantisation** — all pitches snap to C-major pentatonic so simultaneous streams are always consonant regardless of data values
 - **Sample-accurate timing** — notes pre-scheduled on the Web Audio clock; cursor driven by `requestAnimationFrame` + `audioCtx.currentTime`, no drift at any BPM
 - **Search** — type in the menu bar to query metrics (`cpu`, `mem`, `network`, `disk`, `load`, `ram`, ...) or filter by process name
