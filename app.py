@@ -22,7 +22,15 @@ import objc
 
 from monitor import (Handler, PORT, maybe_collect,
                      CPU_BUFS, MEM_BUF, SWAP_BUF,
-                     NET_TX, NET_RX, DISK_R, DISK_W, fmt_bytes, _nc)
+                     NET_TX, NET_RX, DISK_R, DISK_W, fmt_bytes, _nc, BUF)
+
+_BLOCKS = "▁▂▃▄▅▆▇█"
+
+def _cpu_spark(n=6):
+    """Last n average-CPU samples as Unicode block characters."""
+    avgs = [sum(b[i] for b in CPU_BUFS) / _nc
+            for i in range(BUF - n, BUF)]
+    return "".join(_BLOCKS[min(int(v / 100 * 8), 7)] for v in avgs)
 
 URL = f"http://127.0.0.1:{PORT}"
 
@@ -58,7 +66,7 @@ class _MenuDelegate(NSObject):
     def updateTitle_(self, timer):
         """Fires every 2 s — keeps the bar title current."""
         cpu = sum(b[-1] for b in CPU_BUFS) / _nc
-        _status_item.setTitle_(f"◉  {cpu:.0f}%")
+        _status_item.setTitle_(f"{_cpu_spark()} {cpu:.0f}%")
 
     def menuWillOpen_(self, menu):
         """Refresh all metric rows the moment the user clicks the icon."""
@@ -100,7 +108,7 @@ class _StatusBarSetup(NSObject):
         _status_item = bar.statusItemWithLength_(NSVariableStatusItemLength)
 
         cpu = sum(b[-1] for b in CPU_BUFS) / _nc
-        _status_item.setTitle_(f"◉  {cpu:.0f}%")
+        _status_item.setTitle_(f"{_cpu_spark()} {cpu:.0f}%")
         _status_item.setHighlightMode_(True)
 
         # ── menu ──────────────────────────────────────────────────────────
