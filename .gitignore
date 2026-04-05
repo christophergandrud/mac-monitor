@@ -1,3 +1,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+AppIcon.iconset/
+icon_1024.png
+build/
+dist/

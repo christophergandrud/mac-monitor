@@ -18,6 +18,7 @@ from setuptools import setup
 
 APP     = ["app.py"]
 OPTIONS = {
+    "iconfile": "icon.icns",
     # Full package directories (includes compiled .so extensions like psutil).
     "packages": [
         "webview",
