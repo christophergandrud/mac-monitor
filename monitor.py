@@ -26,11 +26,6 @@ PORT = 8787
 DASH = ["", "6,3", "2,3", "8,2,2,2", "1,4", "5,2,1,2",
         "4,2", "3,1,1,1", "10,3", "5,1,2,1", "4,1", "2,2"]
 
-# Chart colors — read from active theme at request time
-def _c0(): return _T["c0"]
-def _c1(): return _T["c1"]
-def _c2(): return _T["c2"]
-def _ink(): return [_T["c0"], _T["c1"], _T["c2"]] * 4
 
 # ── rolling buffers ───────────────────────────────────────────────────────────
 _nc      = (psutil.cpu_count(logical=True) or 4) if HAS_PSUTIL else 4
@@ -200,18 +195,18 @@ def _grid(pl, pr, pt, pb, w, h, ymax, pcts, fmt_fn):
         y  = pt + ih - int(pct / 100 * ih)
         yv = ymax * pct / 100
         out += (f'<line x1="{pl}" y1="{y}" x2="{w-pr}" y2="{y}" '
-                f'stroke="#2a2a2a" stroke-width="0.5" stroke-dasharray="2,3"/>'
+                f'stroke="var(--t-border)" stroke-width="0.5" stroke-dasharray="2,3"/>'
                 f'<text x="{pl-3}" y="{y+3}" font-size="7" text-anchor="end" '
-                f'fill="#555" font-family="Courier,monospace">{fmt_fn(yv)}</text>')
+                f'fill="var(--t-muted)" font-family="Courier,monospace">{fmt_fn(yv)}</text>')
     return out
 
 
 def _axes(pl, pr, pt, pb, w, h):
     ih = h - pt - pb
     return (f'<line x1="{pl}" y1="{pt}" x2="{pl}" y2="{pt+ih}" '
-            f'stroke="#444" stroke-width="1.5"/>'
+            f'stroke="var(--t-border)" stroke-width="1.5"/>'
             f'<line x1="{pl}" y1="{pt+ih}" x2="{w-pr}" y2="{pt+ih}" '
-            f'stroke="#444" stroke-width="1.5"/>')
+            f'stroke="var(--t-border)" stroke-width="1.5"/>')
 
 
 def _svg_line(buf, pl, pr, pt, pb, w, h, ymax, dash, label, color,
@@ -221,7 +216,7 @@ def _svg_line(buf, pl, pr, pt, pb, w, h, ymax, dash, label, color,
         label_fn = lambda vs: fmt_bytes(vs[-1])
     pts = _make_pts(buf, pl, pr, pt, pb, w, h, ymax)
     vs  = list(buf)
-    d   = f"M{pts[0][0]},{pts[0][1]}" + "".join(f" L{x},{y}" for x, y in pts[1:])
+    d   = _pts_to_path(pts)
     da  = f'stroke-dasharray="{dash}"' if dash else ""
     lx, ly = pts[-1]
     tag = (f'<text x="{lx-2}" y="{max(ly-5, pt+10)}" text-anchor="end" '
@@ -231,9 +226,13 @@ def _svg_line(buf, pl, pr, pt, pb, w, h, ymax, dash, label, color,
             f'stroke-width="1.2" {da} opacity="{opacity}"/>{tag}')
 
 
+def _pts_to_path(pts):
+    return f"M{pts[0][0]},{pts[0][1]}" + "".join(f" L{x},{y}" for x, y in pts[1:])
+
+
 def _stamp(w, h):
     return (f'<text x="{w-8}" y="{h}" text-anchor="end" font-size="8" '
-            f'fill="#aaa" font-family="Courier,monospace">'
+            f'fill="var(--t-muted)" font-family="Courier,monospace">'
             f'upd {time.strftime("%H:%M:%S")}</text>')
 
 
@@ -258,12 +257,10 @@ def svg_cpu_score(*, w=720, h=270):
     lines = ""
     for ci, buf in enumerate(CPU_BUFS):
         dash  = DASH[ci % len(DASH)]
-        ink   = _ink()
-        color = ink[ci % len(ink)]
+        color = f"var(--t-c{ci % 3})"
         sw    = 1.5 if ci % 3 == 0 else (0.9 if ci % 3 == 1 else 1.2)
         pts   = _make_pts(buf, pl, pr, pt, pb, w, h, 100)
-        d     = (f"M{pts[0][0]},{pts[0][1]}" +
-                 "".join(f" L{x},{y}" for x, y in pts[1:]))
+        d     = _pts_to_path(pts)
         da    = f'stroke-dasharray="{dash}"' if dash else ""
         lines += (f'<path d="{d}" fill="none" stroke="{color}" '
                   f'stroke-width="{sw}" {da} opacity="0.72"/>')
@@ -308,8 +305,8 @@ def svg_dual(buf_a, buf_b, la, lb, *, w=460, h=160):
             f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
             f'style="width:100%;height:auto;display:block">'
             f'{grid}'
-            f'{_svg_line(buf_a,pl,pr,pt,pb,w,h,ymax,"",la,_c0())}'
-            f'{_svg_line(buf_b,pl,pr,pt,pb,w,h,ymax,"6,3",lb,_c1())}'
+            f'{_svg_line(buf_a,pl,pr,pt,pb,w,h,ymax,"",la,"var(--t-c0)")}'
+            f'{_svg_line(buf_b,pl,pr,pt,pb,w,h,ymax,"6,3",lb,"var(--t-c1)")}'
             f'{_axes(pl,pr,pt,pb,w,h)}{hovA}{hovB}{_stamp(w,h)}</svg>')
 
 
@@ -333,8 +330,8 @@ def svg_mem(*, w=460, h=150):
             f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
             f'style="width:100%;height:auto;display:block">'
             f'{grid}'
-            f'{_svg_line(MEM_BUF, pl,pr,pt,pb,w,h,100,"","MEM",_c0(),0.85,pct_label)}'
-            f'{_svg_line(SWAP_BUF,pl,pr,pt,pb,w,h,100,"5,3","SWAP",_c2(),0.75,pct_label)}'
+            f'{_svg_line(MEM_BUF, pl,pr,pt,pb,w,h,100,"","MEM","var(--t-c0)",0.85,pct_label)}'
+            f'{_svg_line(SWAP_BUF,pl,pr,pt,pb,w,h,100,"5,3","SWAP","var(--t-c2)",0.75,pct_label)}'
             f'{_axes(pl,pr,pt,pb,w,h)}{hov_m}{hov_s}{_stamp(w,h)}</svg>')
 
 
@@ -352,16 +349,15 @@ def html_gauges():
         freq = _val_to_hz(pct, 100, 60, 84)
         rows += (
             f'<div style="margin:.5rem 0">'
-            f'<div style="display:flex;justify-content:space-between;'
-            f'font-size:11px;font-weight:bold;font-family:Courier,monospace">'
+            f'<div style="display:flex;justify-content:space-between;font-weight:bold">'
             f'<span>{label}</span><span>{pct:.1f}%</span></div>'
-            f'<div style="background:#1a1a1a;border:1px solid #333;height:10px;'
+            f'<div style="background:var(--t-panel);border:1px solid var(--t-border);height:10px;'
             f'overflow:hidden;cursor:crosshair" '
             f'onmouseover="window._htmxBeep&&window._htmxBeep({freq})">'
-            f'<div style="background:{_c0()};width:{pct:.1f}%;height:100%"></div>'
+            f'<div style="background:var(--t-c0);width:{pct:.1f}%;height:100%"></div>'
             f'</div></div>'
         )
-    rows += (f'<p style="font-size:9px;font-family:Courier,monospace;margin-top:.5rem">'
+    rows += (f'<p style="font-size:9px;margin-top:.5rem">'
              f'upd {time.strftime("%H:%M:%S")}</p>')
     return rows
 
@@ -395,16 +391,15 @@ def html_proc_rows(q="", sort="cpu"):
         bw = min(int(p["cpu"]), 100)
         rows += (
             f'<tr>'
-            f'<td style="font-family:Courier,monospace;font-size:11px">{p["pid"]}</td>'
-            f'<td style="font-family:Courier,monospace;font-size:11px">{p["name"][:32]}</td>'
-            f'<td style="font-family:Courier,monospace;font-size:11px">'
-            f'<div style="display:flex;align-items:center;gap:.3rem">'
-            f'<div style="background:#1a1a1a;border:1px solid #333;'
+            f'<td>{p["pid"]}</td>'
+            f'<td>{p["name"][:32]}</td>'
+            f'<td><div style="display:flex;align-items:center;gap:.3rem">'
+            f'<div style="background:var(--t-panel);border:1px solid var(--t-border);'
             f'width:48px;height:6px;flex-shrink:0">'
-            f'<div style="background:{_c1()};width:{bw}%;height:100%"></div></div>'
+            f'<div style="background:var(--t-c1);width:{bw}%;height:100%"></div></div>'
             f'{p["cpu"]:.1f}%</div></td>'
-            f'<td style="font-family:Courier,monospace;font-size:11px">{p["mem"]:.1f}%</td>'
-            f'<td style="font-family:Courier,monospace;font-size:11px">{p["status"]}</td>'
+            f'<td>{p["mem"]:.1f}%</td>'
+            f'<td>{p["status"]}</td>'
             f'</tr>'
         )
     return rows
