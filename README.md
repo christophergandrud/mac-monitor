@@ -23,7 +23,7 @@ A real-time macOS system monitor with audible charts. Built with htmx, plain Pyt
 - **Slope → detune** — rising data = sharper (up to +80 cents) and brighter timbre; falling = flatter and darker
 - **Reverb + compressor** — synthetic impulse response reverb; master DynamicsCompressor keeps loud and quiet passages both audible
 
-## Running
+## Running in the browser
 
 ```bash
 pip install psutil
@@ -32,6 +32,28 @@ python3 monitor.py
 ```
 
 Without `psutil` the monitor runs in simulation mode (random-walk data).
+
+## Running as a macOS desktop app
+
+Requires `pywebview` (native WKWebView window) and `pyobjc-framework-Cocoa` (menu bar icon).
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install pywebview pyobjc-framework-Cocoa psutil
+
+python app.py
+```
+
+The app starts the HTTP server in a background thread, opens the dashboard in a native window, and adds a **◉ Mon** icon to the menu bar. Clicking it reveals Show Monitor / Quit.
+
+### Build a distributable .app bundle
+
+```bash
+pip install py2app
+python setup.py py2app        # release build → dist/Mac Monitor.app
+python setup.py py2app -A     # alias/dev build (symlinked, no copy)
+open "dist/Mac Monitor.app"
+```
 
 ## Stack
 
