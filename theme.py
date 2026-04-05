@@ -5,7 +5,7 @@ Drop a Warp theme file at ~/.mac-monitor/theme.yaml to restyle the app.
 Community themes: https://github.com/warpdotdev/themes
 """
 
-import pathlib, colorsys
+import pathlib, colorsys, subprocess, json
 
 try:
     import yaml
@@ -14,9 +14,16 @@ except ImportError:
     import json
     def _parse(text): return json.loads(text)
 
-_HERE    = pathlib.Path(__file__).parent / "themes"
-_USER    = pathlib.Path.home() / ".mac-monitor" / "theme.yaml"
-_DEFAULT = "spring-dark.yaml"
+_HERE     = pathlib.Path(__file__).parent / "themes"
+_USER     = pathlib.Path.home() / ".mac-monitor" / "theme.yaml"
+_SETTINGS = pathlib.Path.home() / ".mac-monitor" / "settings.json"
+_DEFAULT  = "spring-dark.yaml"
+
+_SETTINGS_DEFAULTS = {
+    "follow_system": False,
+    "dark_theme":    "spring-dark",
+    "light_theme":   "paper",
+}
 
 # ── colour helpers ─────────────────────────────────────────────────────────────
 
@@ -104,6 +111,61 @@ def load() -> dict:
     else:
         raw = _parse((_HERE / _DEFAULT).read_text())
     return _resolve(raw)
+
+
+def list_themes() -> list[dict]:
+    """Return all built-in themes as list of {slug, name} dicts, sorted by name."""
+    themes = []
+    for f in sorted(_HERE.glob("*.yaml")):
+        raw = _parse(f.read_text())
+        themes.append({"slug": f.stem, "name": raw.get("name", f.stem)})
+    return themes
+
+
+def set_theme(slug: str) -> dict:
+    """Write built-in theme <slug> to the user override path and return resolved dict."""
+    src = _HERE / f"{slug}.yaml"
+    if not src.exists():
+        raise FileNotFoundError(slug)
+    _USER.parent.mkdir(parents=True, exist_ok=True)
+    _USER.write_text(src.read_text())
+    return _resolve(_parse(src.read_text()))
+
+
+def load_settings() -> dict:
+    if _SETTINGS.exists():
+        try:
+            return {**_SETTINGS_DEFAULTS, **json.loads(_SETTINGS.read_text())}
+        except Exception:
+            pass
+    return dict(_SETTINGS_DEFAULTS)
+
+
+def save_settings(d: dict) -> None:
+    _SETTINGS.parent.mkdir(parents=True, exist_ok=True)
+    _SETTINGS.write_text(json.dumps(d, indent=2))
+
+
+def system_is_dark() -> bool:
+    """Return True if macOS is currently in Dark Mode."""
+    try:
+        r = subprocess.run(
+            ["defaults", "read", "-g", "AppleInterfaceStyle"],
+            capture_output=True, text=True
+        )
+        return r.returncode == 0 and "dark" in r.stdout.strip().lower()
+    except Exception:
+        return False
+
+
+def theme_for_system() -> dict:
+    """Return the correct theme dict based on current system appearance and settings."""
+    s = load_settings()
+    slug = s["dark_theme"] if system_is_dark() else s["light_theme"]
+    src = _HERE / f"{slug}.yaml"
+    if not src.exists():
+        src = _HERE / _DEFAULT
+    return _resolve(_parse(src.read_text()))
 
 
 def css_vars(t: dict) -> str:

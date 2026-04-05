@@ -456,6 +456,20 @@ def html_search_results(q):
     return out
 
 
+def html_theme_list():
+    active = _T["name"]
+    items = ""
+    for t in _theme.list_themes():
+        active_mark = " ✓" if t["name"] == active else ""
+        items += (
+            f'<button class="theme-opt" '
+            f'hx-post="/theme/set?slug={t["slug"]}" '
+            f'hx-target="#theme-style" hx-swap="outerHTML">'
+            f'{t["name"]}{active_mark}</button>'
+        )
+    return items
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 
 class Handler(BaseHTTPRequestHandler):
@@ -488,10 +502,26 @@ class Handler(BaseHTTPRequestHandler):
             "/metrics/sysinfo": lambda: html_sysinfo(),
             "/processes":       lambda: (maybe_collect(), html_proc_rows(q, sort))[1],
             "/search":          lambda: html_search_results(q),
+            "/themes":          lambda: html_theme_list(),
         }
         fn = routes.get(path)
         if fn:
             self.send_html(fn())
+        else:
+            self.send_html("<p>not found</p>", 404)
+
+    def do_POST(self):
+        p    = urlparse(self.path)
+        qs   = parse_qs(p.query)
+        slug = qs.get("slug", [""])[0]
+        if p.path == "/theme/set" and slug:
+            global _T
+            try:
+                _T = _theme.set_theme(slug)
+            except FileNotFoundError:
+                self.send_html("<p>unknown theme</p>", 400)
+                return
+            self.send_html(_theme.css_vars(_T))
         else:
             self.send_html("<p>not found</p>", 404)
 
@@ -810,6 +840,26 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 
 /* play button — overrides base button sizing */
 .play-btn{margin-left:.5rem;font-size:9px;padding:0 5px;box-shadow:1px 1px 0 #000}
+
+/* settings dropdown */
+.settings-wrap{position:relative}
+.settings-btn{font-size:9px;padding:0 6px;height:16px;line-height:16px}
+.settings-drop{
+  position:absolute;top:calc(100% + 4px);right:0;min-width:160px;
+  background:var(--t-panel2);border:1px solid var(--t-border);
+  z-index:300;padding:.3rem 0;
+}
+.settings-section{
+  font-size:9px;font-weight:bold;letter-spacing:.12em;
+  color:var(--t-muted);padding:.2rem .7rem .3rem;text-transform:uppercase;
+}
+.theme-opt{
+  display:block;width:100%;text-align:left;
+  border:none;border-radius:0;box-shadow:none;
+  background:transparent;color:var(--t-fg);
+  font-size:11px;padding:.25rem .7rem;cursor:pointer;
+}
+.theme-opt:hover{background:var(--t-stripe);color:var(--t-accent);border:none}
 </style>
 </head>
 <body>
@@ -828,11 +878,21 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
   <span style="margin-left:auto;display:flex;align-items:center;gap:.5rem">
     <label style="font-size:10px;font-weight:bold">BPM</label>
     <input type="number" id="bpm-input" value="200" min="20" max="600"
-           style="width:52px;border:1px solid #333;padding:0 4px;font-family:inherit;
-                  font-size:11px;background:#1a1a1a;color:#C8FF47;outline:none;height:16px">
+           style="width:52px;border:1px solid var(--t-border);padding:0 4px;font-family:inherit;
+                  font-size:11px;background:var(--t-panel);color:var(--t-accent);outline:none;height:16px">
     <label style="font-size:10px;font-weight:bold;display:flex;align-items:center;gap:3px;cursor:pointer">
-      <input type="checkbox" id="loop-toggle" style="accent-color:#C8FF47">LOOP
+      <input type="checkbox" id="loop-toggle" style="accent-color:var(--t-accent)">LOOP
     </label>
+    <!-- Settings menu -->
+    <div class="settings-wrap">
+      <button class="settings-btn" onclick="toggleSettings(event)">SETTINGS &#9660;</button>
+      <div id="settings-drop" class="settings-drop" style="display:none">
+        <div class="settings-section">APPEARANCE</div>
+        <div id="theme-list"
+             hx-get="/themes" hx-trigger="intersect once"
+             hx-swap="innerHTML"></div>
+      </div>
+    </div>
     <span hx-get="/metrics/sysinfo" hx-trigger="load, every 5s"
           hx-target="this" hx-swap="innerHTML"></span>
   </span>

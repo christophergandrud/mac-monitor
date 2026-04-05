@@ -1,0 +1,25 @@
+name: Paper
+background: '#F2EFE8'
+foreground: '#1A1A1A'
+accent: '#005B99'
+cursor: '#1A1A1A'
+details: lighter
+terminal_colors:
+  normal:
+    black:   '#1A1A1A'
+    red:     '#B22222'
+    green:   '#2E6B2E'
+    yellow:  '#8B6914'
+    blue:    '#005B99'
+    magenta: '#7B2B8B'
+    cyan:    '#1A6B6B'
+    white:   '#F2EFE8'
+  bright:
+    black:   '#444444'
+    red:     '#CC4444'
+    green:   '#3D8C3D'
+    yellow:  '#A07820'
+    blue:    '#1A7ACC'
+    magenta: '#9B3BAB'
+    cyan:    '#2A8B8B'
+    white:   '#FFFFFF'

@@ -43,7 +43,8 @@ OPTIONS = {
                     "themes/apple-iie.yaml",
                     "themes/commodore-64.yaml",
                     "themes/bbc-micro.yaml",
-                    "themes/amber-phosphor.yaml"]),
+                    "themes/amber-phosphor.yaml",
+                    "themes/paper.yaml"]),
     ],
     "excludes": [
         "tkinter",
