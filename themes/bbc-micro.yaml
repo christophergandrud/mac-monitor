@@ -1,0 +1,25 @@
+name: BBC Micro
+background: '#000000'
+foreground: '#FFFFFF'
+accent: '#FFFF00'
+cursor: '#FFFFFF'
+details: darker
+terminal_colors:
+  normal:
+    black:   '#000000'
+    red:     '#FF0000'
+    green:   '#00FF00'
+    yellow:  '#FFFF00'
+    blue:    '#0000FF'
+    magenta: '#FF00FF'
+    cyan:    '#00FFFF'
+    white:   '#FFFFFF'
+  bright:
+    black:   '#222222'
+    red:     '#FF4444'
+    green:   '#44FF44'
+    yellow:  '#FFFF44'
+    blue:    '#4444FF'
+    magenta: '#FF44FF'
+    cyan:    '#44FFFF'
+    white:   '#FFFFFF'

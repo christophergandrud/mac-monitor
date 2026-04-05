@@ -1,0 +1,25 @@
+name: Amber Phosphor
+background: '#0D0800'
+foreground: '#FFB000'
+accent: '#FFB000'
+cursor: '#FFD050'
+details: darker
+terminal_colors:
+  normal:
+    black:   '#0D0800'
+    red:     '#CC7000'
+    green:   '#FFB000'
+    yellow:  '#FFD050'
+    blue:    '#B07800'
+    magenta: '#E09000'
+    cyan:    '#FFA000'
+    white:   '#FFCC60'
+  bright:
+    black:   '#1A1000'
+    red:     '#EE8800'
+    green:   '#FFC030'
+    yellow:  '#FFE080'
+    blue:    '#D09000'
+    magenta: '#FFAA20'
+    cyan:    '#FFB820'
+    white:   '#FFFFFF'

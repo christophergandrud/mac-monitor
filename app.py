@@ -20,6 +20,7 @@ from AppKit import (
 from Foundation import NSTimer
 import objc
 
+import theme as _theme
 from monitor import (Handler, PORT, maybe_collect,
                      CPU_BUFS, MEM_BUF, SWAP_BUF,
                      NET_TX, NET_RX, DISK_R, DISK_W, fmt_bytes, _nc, BUF)
@@ -177,7 +178,7 @@ if __name__ == "__main__":
         width=1280,
         height=840,
         resizable=True,
-        background_color="#0d0d0d",
+        background_color=_theme.load()["bg"],
     )
 
     webview.start(func=_setup_menu_bar, args=[window], debug=False)

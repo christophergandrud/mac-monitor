@@ -1,0 +1,25 @@
+name: Apple IIe
+background: '#0A1A0A'
+foreground: '#33FF33'
+accent: '#33FF33'
+cursor: '#33FF33'
+details: darker
+terminal_colors:
+  normal:
+    black:   '#0A1A0A'
+    red:     '#1AFF1A'
+    green:   '#33FF33'
+    yellow:  '#66FF66'
+    blue:    '#00CC00'
+    magenta: '#4DFF4D'
+    cyan:    '#00FF00'
+    white:   '#99FF99'
+  bright:
+    black:   '#143314'
+    red:     '#4DFF4D'
+    green:   '#66FF66'
+    yellow:  '#99FF99'
+    blue:    '#33FF33'
+    magenta: '#80FF80'
+    cyan:    '#33FF33'
+    white:   '#CCFFCC'

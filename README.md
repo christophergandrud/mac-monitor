@@ -33,6 +33,24 @@ Each chart occupies a distinct MIDI register (logarithmic pitch mapping) and eac
 - **Reverb** — synthetic convolution reverb (exponential decay impulse response)
 - **Master compressor** — DynamicsCompressor (−24 dB threshold, 4:1) keeps loud and quiet passages both audible
 
+## Themes
+
+Drop any [Warp-compatible YAML theme](https://github.com/warpdotdev/themes) at `~/.mac-monitor/theme.yaml` and the app reloads within 5 seconds — no restart needed.
+
+```bash
+cp themes/commodore-64.yaml ~/.mac-monitor/theme.yaml
+```
+
+Five themes are bundled:
+
+| Theme | Inspired by |
+|-------|-------------|
+| `spring-dark.yaml` | Default — high-luminance spring palette |
+| `apple-iie.yaml` | Apple IIe green phosphor monitor |
+| `commodore-64.yaml` | Commodore 64 BASIC boot screen |
+| `bbc-micro.yaml` | BBC Micro Mode 1 full-colour palette |
+| `amber-phosphor.yaml` | Amber phosphor IBM terminal |
+
 ## Running in the browser
 
 ```bash

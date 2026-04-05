@@ -1,0 +1,25 @@
+name: Commodore 64
+background: '#4040B4'
+foreground: '#8080F0'
+accent: '#B8B8F8'
+cursor: '#B8B8F8'
+details: lighter
+terminal_colors:
+  normal:
+    black:   '#2C2C8C'
+    red:     '#883232'
+    green:   '#387C38'
+    yellow:  '#B8A840'
+    blue:    '#4040B4'
+    magenta: '#7C4898'
+    cyan:    '#387878'
+    white:   '#B8B8F8'
+  bright:
+    black:   '#4040B4'
+    red:     '#E07878'
+    green:   '#68BC68'
+    yellow:  '#F0E890'
+    blue:    '#7878E0'
+    magenta: '#C888E0'
+    cyan:    '#78B8B8'
+    white:   '#FCFCFC'

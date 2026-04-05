@@ -1,9 +1,17 @@
 #!/usr/bin/env python3
-"""Mac System Monitor — htmx + audible score charts + spring palette."""
+"""Mac System Monitor — htmx + audible score charts."""
 
 import collections, time, os, platform, socket, random, json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+
+import theme as _theme
+_T  = _theme.load()   # active theme dict — reloaded on /theme poll
+
+def _reload_theme():
+    global _T
+    _T = _theme.load()
+    return _theme.css_vars(_T)
 
 try:
     import psutil
@@ -18,12 +26,11 @@ PORT = 8787
 DASH = ["", "6,3", "2,3", "8,2,2,2", "1,4", "5,2,1,2",
         "4,2", "3,1,1,1", "10,3", "5,1,2,1", "4,1", "2,2"]
 
-# High-luminance spring palette — readable under ambient light on dark bg
-C_GREEN = "#C8FF47"   # electric spring green
-C_PINK  = "#FF6BB5"   # hot blossom pink
-C_BLUE  = "#4DDDFF"   # bright cyan
-INK = [C_GREEN, C_PINK, C_BLUE, C_GREEN, C_PINK, C_BLUE,
-       C_GREEN, C_PINK, C_BLUE, C_GREEN, C_PINK, C_BLUE]
+# Chart colors — read from active theme at request time
+def _c0(): return _T["c0"]
+def _c1(): return _T["c1"]
+def _c2(): return _T["c2"]
+def _ink(): return [_T["c0"], _T["c1"], _T["c2"]] * 4
 
 # ── rolling buffers ───────────────────────────────────────────────────────────
 _nc      = (psutil.cpu_count(logical=True) or 4) if HAS_PSUTIL else 4
@@ -251,7 +258,8 @@ def svg_cpu_score(*, w=720, h=270):
     lines = ""
     for ci, buf in enumerate(CPU_BUFS):
         dash  = DASH[ci % len(DASH)]
-        color = INK[ci % len(INK)]
+        ink   = _ink()
+        color = ink[ci % len(ink)]
         sw    = 1.5 if ci % 3 == 0 else (0.9 if ci % 3 == 1 else 1.2)
         pts   = _make_pts(buf, pl, pr, pt, pb, w, h, 100)
         d     = (f"M{pts[0][0]},{pts[0][1]}" +
@@ -300,8 +308,8 @@ def svg_dual(buf_a, buf_b, la, lb, *, w=460, h=160):
             f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
             f'style="width:100%;height:auto;display:block">'
             f'{grid}'
-            f'{_svg_line(buf_a,pl,pr,pt,pb,w,h,ymax,"",la,C_GREEN)}'
-            f'{_svg_line(buf_b,pl,pr,pt,pb,w,h,ymax,"6,3",lb,C_PINK)}'
+            f'{_svg_line(buf_a,pl,pr,pt,pb,w,h,ymax,"",la,_c0())}'
+            f'{_svg_line(buf_b,pl,pr,pt,pb,w,h,ymax,"6,3",lb,_c1())}'
             f'{_axes(pl,pr,pt,pb,w,h)}{hovA}{hovB}{_stamp(w,h)}</svg>')
 
 
@@ -325,8 +333,8 @@ def svg_mem(*, w=460, h=150):
             f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
             f'style="width:100%;height:auto;display:block">'
             f'{grid}'
-            f'{_svg_line(MEM_BUF, pl,pr,pt,pb,w,h,100,"","MEM",C_GREEN,0.85,pct_label)}'
-            f'{_svg_line(SWAP_BUF,pl,pr,pt,pb,w,h,100,"5,3","SWAP",C_BLUE,0.75,pct_label)}'
+            f'{_svg_line(MEM_BUF, pl,pr,pt,pb,w,h,100,"","MEM",_c0(),0.85,pct_label)}'
+            f'{_svg_line(SWAP_BUF,pl,pr,pt,pb,w,h,100,"5,3","SWAP",_c2(),0.75,pct_label)}'
             f'{_axes(pl,pr,pt,pb,w,h)}{hov_m}{hov_s}{_stamp(w,h)}</svg>')
 
 
@@ -350,7 +358,7 @@ def html_gauges():
             f'<div style="background:#1a1a1a;border:1px solid #333;height:10px;'
             f'overflow:hidden;cursor:crosshair" '
             f'onmouseover="window._htmxBeep&&window._htmxBeep({freq})">'
-            f'<div style="background:{C_GREEN};width:{pct:.1f}%;height:100%"></div>'
+            f'<div style="background:{_c0()};width:{pct:.1f}%;height:100%"></div>'
             f'</div></div>'
         )
     rows += (f'<p style="font-size:9px;font-family:Courier,monospace;margin-top:.5rem">'
@@ -393,7 +401,7 @@ def html_proc_rows(q="", sort="cpu"):
             f'<div style="display:flex;align-items:center;gap:.3rem">'
             f'<div style="background:#1a1a1a;border:1px solid #333;'
             f'width:48px;height:6px;flex-shrink:0">'
-            f'<div style="background:{C_PINK};width:{bw}%;height:100%"></div></div>'
+            f'<div style="background:{_c1()};width:{bw}%;height:100%"></div></div>'
             f'{p["cpu"]:.1f}%</div></td>'
             f'<td style="font-family:Courier,monospace;font-size:11px">{p["mem"]:.1f}%</td>'
             f'<td style="font-family:Courier,monospace;font-size:11px">{p["status"]}</td>'
@@ -470,7 +478,8 @@ class Handler(BaseHTTPRequestHandler):
         sort = qs.get("sort", ["cpu"])[0]
 
         routes = {
-            "/":                lambda: INDEX_HTML,
+            "/":                lambda: _build_index(),
+            "/theme":           lambda: _reload_theme(),
             "/metrics/cpu":     lambda: (maybe_collect(), svg_cpu_score())[1],
             "/metrics/memory":  lambda: (maybe_collect(), svg_mem())[1],
             "/metrics/gauges":  lambda: (maybe_collect(), html_gauges())[1],
@@ -489,12 +498,16 @@ class Handler(BaseHTTPRequestHandler):
 
 # ── page ──────────────────────────────────────────────────────────────────────
 
-INDEX_HTML = """<!DOCTYPE html>
+def _build_index():
+    return _INDEX_TMPL.replace("__THEME_STYLE__", _theme.css_vars(_T))
+
+_INDEX_TMPL = """<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>System Monitor</title>
+__THEME_STYLE__
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 <script>
 // ── Voice presets ─────────────────────────────────────────────────────────────
@@ -696,14 +709,14 @@ document.addEventListener('keydown',function(e){
 
 html,body{
   font-family:"Courier New",Courier,monospace;
-  font-size:13px;color:#f0f0f0;min-height:100vh;
-  background-color:#0d0d0d;
+  font-size:13px;color:var(--t-fg);min-height:100vh;
+  background-color:var(--t-bg);
 }
 
 /* menubar */
 .menubar{
-  background:rgba(13,13,13,.97);
-  border-bottom:1px solid #333;
+  background:var(--t-bg);
+  border-bottom:1px solid var(--t-border);
   padding:0 1rem;height:24px;
   display:flex;align-items:center;gap:.8rem;
   position:sticky;top:0;z-index:100;
@@ -713,16 +726,16 @@ html,body{
 /* search */
 .search-wrap{position:relative;flex:1;max-width:380px}
 .search-input{
-  width:100%;border:1px solid #333;padding:1px 6px;
-  font-family:inherit;font-size:11px;background:#1a1a1a;color:#f0f0f0;outline:none;
+  width:100%;border:1px solid var(--t-border);padding:1px 6px;
+  font-family:inherit;font-size:11px;background:var(--t-panel);color:var(--t-fg);outline:none;
 }
-.search-input:focus{outline:1px solid #C8FF47;outline-offset:1px}
-.search-input::placeholder{color:#555}
+.search-input:focus{outline:1px solid var(--t-accent);outline-offset:1px}
+.search-input::placeholder{color:var(--t-muted)}
 #search-drop{
   display:none;position:absolute;top:100%;left:0;right:0;
-  background:#111;border:1px solid #333;border-top:none;
+  background:var(--t-panel2);border:1px solid var(--t-border);border-top:none;
   padding:.3rem .5rem;z-index:200;max-height:260px;overflow-y:auto;
-  color:#f0f0f0;
+  color:var(--t-fg);
 }
 
 /* page */
@@ -732,28 +745,28 @@ html,body{
 .group{
   font-size:10px;font-weight:bold;text-transform:uppercase;
   letter-spacing:.1em;margin:1.2rem 0 .4rem;
-  border-bottom:1px solid #333;padding-bottom:1px;
-  color:#666;
+  border-bottom:1px solid var(--t-border);padding-bottom:1px;
+  color:var(--t-muted);
 }
 
 /* mac window cards */
 .card{
-  background:#111;
-  border:1px solid #2a2a2a;
-  box-shadow:3px 3px 0 #C8FF4722;
+  background:var(--t-panel2);
+  border:1px solid var(--t-border);
+  box-shadow:3px 3px 0 var(--t-c0-22);
   margin-bottom:1rem;
 }
 .card-head{
   background:repeating-linear-gradient(
-    180deg,#222 0px,#222 1px,#111 1px,#111 2px);
-  border-bottom:1px solid #2a2a2a;
+    180deg,var(--t-stripe) 0px,var(--t-stripe) 1px,var(--t-panel2) 1px,var(--t-panel2) 2px);
+  border-bottom:1px solid var(--t-border);
   padding:.22rem .7rem;
   display:flex;align-items:center;gap:.6rem;
 }
-.card-title{font-size:11px;font-weight:bold;background:transparent;padding:0 .25rem;color:#e0e0e0}
+.card-title{font-size:11px;font-weight:bold;background:transparent;padding:0 .25rem;color:var(--t-fg)}
 .badge{
   margin-left:auto;font-size:9px;font-weight:bold;
-  background:#1a1a1a;color:#C8FF47;border:1px solid #C8FF4744;padding:1px 4px;
+  background:var(--t-panel);color:var(--t-accent);border:1px solid var(--t-c0-44);padding:1px 4px;
 }
 .card-body{padding:.7rem .9rem}
 
@@ -763,32 +776,32 @@ html,body{
 
 /* tables */
 table{border-collapse:collapse;width:100%}
-th,td{border:1px solid #222;padding:.25rem .5rem;text-align:left;color:#e8e8e8}
+th,td{border:1px solid var(--t-border);padding:.25rem .5rem;text-align:left;color:var(--t-fg)}
 th{
-  background:#1a1a1a;color:#C8FF47;font-size:10px;
+  background:var(--t-panel);color:var(--t-accent);font-size:10px;
   text-transform:uppercase;letter-spacing:.04em;
   cursor:pointer;user-select:none;
 }
-th:hover{background:#222;color:#fff}
-tr:nth-child(even) td{background:rgba(255,255,255,.03)}
+th:hover{background:var(--t-stripe);color:var(--t-fg)}
+tr:nth-child(even) td{background:rgba(128,128,128,.05)}
 
 /* inputs */
 input[type=text]{
-  border:1px solid #333;padding:.25rem .5rem;
-  font-family:inherit;font-size:11px;background:#1a1a1a;color:#f0f0f0;outline:none;
+  border:1px solid var(--t-border);padding:.25rem .5rem;
+  font-family:inherit;font-size:11px;background:var(--t-panel);color:var(--t-fg);outline:none;
 }
-input[type=text]:focus{outline:1px solid #C8FF47;outline-offset:1px}
-input[type=text]::placeholder{color:#555}
+input[type=text]:focus{outline:1px solid var(--t-accent);outline-offset:1px}
+input[type=text]::placeholder{color:var(--t-muted)}
 
 /* buttons */
 button{
-  border:1px solid #333;padding:.25rem .75rem;
+  border:1px solid var(--t-border);padding:.25rem .75rem;
   font-family:inherit;font-size:11px;font-weight:bold;
-  cursor:pointer;background:#1a1a1a;color:#C8FF47;
-  box-shadow:2px 2px 0 #C8FF4733;position:relative;
+  cursor:pointer;background:var(--t-panel);color:var(--t-accent);
+  box-shadow:2px 2px 0 var(--t-c0-33);position:relative;
 }
 button:active{box-shadow:none;top:2px;left:2px}
-button:hover{border-color:#C8FF47;color:#fff;}
+button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 
 /* htmx */
 .htmx-indicator{display:none;font-size:10px;font-weight:bold}
@@ -800,6 +813,7 @@ button:hover{border-color:#C8FF47;color:#fff;}
 </style>
 </head>
 <body>
+<span hx-get="/theme" hx-trigger="every 5s" hx-swap="outerHTML" hx-target="#theme-style" style="display:none"></span>
 
 <div class="menubar">
   <div class="search-wrap">

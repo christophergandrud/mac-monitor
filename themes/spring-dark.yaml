@@ -1,0 +1,25 @@
+name: Spring Dark
+background: '#0d0d0d'
+foreground: '#f0f0f0'
+accent: '#C8FF47'
+cursor: '#ffffff'
+details: darker
+terminal_colors:
+  normal:
+    black:   '#1a1a1a'
+    red:     '#FF6BB5'
+    green:   '#C8FF47'
+    yellow:  '#FFE566'
+    blue:    '#4DDDFF'
+    magenta: '#FF6BB5'
+    cyan:    '#4DDDFF'
+    white:   '#e0e0e0'
+  bright:
+    black:   '#333333'
+    red:     '#FF8FCC'
+    green:   '#DEFF80'
+    yellow:  '#FFEE99'
+    blue:    '#80EEFF'
+    magenta: '#FF8FCC'
+    cyan:    '#80EEFF'
+    white:   '#ffffff'

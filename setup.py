@@ -31,11 +31,19 @@ OPTIONS = {
     # (pywebview selects its backend at runtime via platform detection).
     "includes": [
         "monitor",
+        "theme",
         "http.server",
         "urllib.parse",
         "collections",
         "threading",
         "webview.platforms.cocoa",
+    ],
+    "data_files": [
+        ("themes", ["themes/spring-dark.yaml",
+                    "themes/apple-iie.yaml",
+                    "themes/commodore-64.yaml",
+                    "themes/bbc-micro.yaml",
+                    "themes/amber-phosphor.yaml"]),
     ],
     "excludes": [
         "tkinter",
