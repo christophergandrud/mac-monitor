@@ -8,6 +8,12 @@ from urllib.parse import urlparse, parse_qs
 import theme as _theme
 _T  = _theme.load()   # active theme dict — reloaded on /theme poll
 
+try:
+    import claude_monitor as _cm
+    HAS_CM = True
+except ImportError:
+    HAS_CM = False
+
 def _reload_theme():
     global _T
     _T = _theme.load()
@@ -484,10 +490,21 @@ class Handler(BaseHTTPRequestHandler):
             "/metrics/sysinfo": lambda: html_sysinfo(),
             "/processes":       lambda: (maybe_collect(), html_proc_rows(q, sort))[1],
             "/search":          lambda: html_search_results(q),
+            "/tab/system":      lambda: html_system_tab(),
+            "/tab/claude":      lambda: html_claude_tab(),
+            "/metrics/claude":  lambda: html_claude_instances(),
+            "/metrics/daily":   lambda: html_daily_stats(),
         }
         fn = routes.get(path)
         if fn:
             self.send_html(fn())
+        elif path.startswith("/claude/focus/"):
+            try:
+                pid = int(path.split("/")[-1])
+                ok = HAS_CM and _cm.focus_terminal(pid)
+                self.send_html("ok" if ok else "fail")
+            except (ValueError, Exception):
+                self.send_html("fail", 400)
         else:
             self.send_html("<p>not found</p>", 404)
 
@@ -503,8 +520,301 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_html("<p>unknown theme</p>", 400)
                 return
             self.send_html(_theme.css_vars(_T))
+        elif p.path.startswith("/claude/focus/"):
+            try:
+                pid = int(p.path.split("/")[-1])
+                ok = HAS_CM and _cm.focus_terminal(pid)
+                self.send_html("ok" if ok else "fail")
+            except (ValueError, Exception):
+                self.send_html("fail", 400)
         else:
             self.send_html("<p>not found</p>", 404)
+
+
+# ── tab content ───────────────────────────────────────────────────────────────
+
+def html_system_tab() -> str:
+    return """<div class="page">
+
+  <!-- CPU Score -->
+  <div class="group">CPU</div>
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Per-Core Activity &mdash; 60s rolling</span>
+      <button onclick="playChart('cpu-chart',this)" class="play-btn">[ PLAY ]</button>
+      <span class="badge">every 2s</span>
+    </div>
+    <div class="card-body">
+      <div id="cpu-chart" hx-get="/metrics/cpu" hx-trigger="load, every 2s" hx-swap="innerHTML">
+        <div style="height:270px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Memory -->
+  <div class="group">Memory</div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">RAM &amp; Swap &mdash; 60s rolling</span>
+        <button onclick="playChart('mem-chart',this)" class="play-btn">[ PLAY ]</button>
+        <span class="badge">every 2s</span>
+      </div>
+      <div class="card-body">
+        <div id="mem-chart" hx-get="/metrics/memory" hx-trigger="load, every 2s" hx-swap="innerHTML">
+          <div style="height:150px"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Utilisation Gauges</span>
+        <span class="badge">every 2s</span>
+      </div>
+      <div class="card-body">
+        <div hx-get="/metrics/gauges" hx-trigger="load, every 2s" hx-swap="innerHTML">
+          <div style="min-height:100px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- I/O -->
+  <div class="group">I/O</div>
+  <div class="grid-2">
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Network &mdash; TX / RX</span>
+        <button onclick="playChart('net-chart',this)" class="play-btn">[ PLAY ]</button>
+        <span class="badge">every 2s</span>
+      </div>
+      <div class="card-body">
+        <div id="net-chart" hx-get="/metrics/network" hx-trigger="load, every 2s" hx-swap="innerHTML">
+          <div style="height:160px"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <span class="card-title">Disk &mdash; Read / Write</span>
+        <button onclick="playChart('disk-chart',this)" class="play-btn">[ PLAY ]</button>
+        <span class="badge">every 2s</span>
+      </div>
+      <div class="card-body">
+        <div id="disk-chart" hx-get="/metrics/disk" hx-trigger="load, every 2s" hx-swap="innerHTML">
+          <div style="height:160px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Processes -->
+  <div class="group">Processes</div>
+  <div class="card">
+    <div class="card-head">
+      <span class="card-title">Top 30 Processes</span>
+      <span class="badge">every 3s</span>
+    </div>
+    <div class="card-body">
+      <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.6rem">
+        <input type="text" id="proc-q" name="q"
+               placeholder="filter by name..."
+               style="width:220px"
+               hx-get="/processes"
+               hx-trigger="keyup changed delay:300ms"
+               hx-target="#proc-tbody"
+               hx-include="#proc-q,#proc-sort">
+        <input type="hidden" id="proc-sort" name="sort" value="cpu">
+        <span class="htmx-indicator">[ searching... ]</span>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th hx-get="/processes?sort=pid"
+                hx-target="#proc-tbody" hx-include="#proc-q"
+                onclick="document.getElementById('proc-sort').value='pid'">PID</th>
+            <th hx-get="/processes?sort=name"
+                hx-target="#proc-tbody" hx-include="#proc-q"
+                onclick="document.getElementById('proc-sort').value='name'">Name</th>
+            <th hx-get="/processes?sort=cpu"
+                hx-target="#proc-tbody" hx-include="#proc-q"
+                onclick="document.getElementById('proc-sort').value='cpu'">CPU %</th>
+            <th hx-get="/processes?sort=mem"
+                hx-target="#proc-tbody" hx-include="#proc-q"
+                onclick="document.getElementById('proc-sort').value='mem'">MEM %</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="proc-tbody"
+               hx-get="/processes" hx-trigger="load, every 3s"
+               hx-swap="innerHTML"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>"""
+
+
+def html_claude_tab() -> str:
+    """Shell for the Claude tab — instances and daily stats poll independently."""
+    return """<div class="page">
+  <div class="group">Active Instances</div>
+  <div id="claude-instances"
+       hx-get="/metrics/claude"
+       hx-trigger="load, every 3s"
+       hx-swap="innerHTML">
+    <div style="padding:1rem;color:var(--t-muted);font-size:11px">scanning...</div>
+  </div>
+
+  <div class="group">Today &amp; 7-Day Activity</div>
+  <div id="claude-daily"
+       hx-get="/metrics/daily"
+       hx-trigger="load, every 10s"
+       hx-swap="innerHTML">
+    <div style="padding:.5rem;color:var(--t-muted);font-size:11px">loading...</div>
+  </div>
+</div>"""
+
+
+def _uptime_str(s: int) -> str:
+    if s < 60:     return f"{s}s"
+    if s < 3600:   return f"{s//60}m {s%60:02d}s"
+    return f"{s//3600}h {(s%3600)//60:02d}m"
+
+
+def html_claude_instances() -> str:
+    if not HAS_CM:
+        return '<div style="padding:1rem;color:var(--t-muted);font-size:11px">claude_monitor not available</div>'
+
+    instances = _cm.find_instances()
+
+    if not instances:
+        desktop = _cm.claude_desktop_process()
+        if desktop:
+            try:
+                mem = desktop.memory_info().rss / (1024*1024)
+            except Exception:
+                mem = 0
+            return (f'<div class="claude-instance"><div class="claude-head">'
+                    f'<strong>Claude Desktop</strong>'
+                    f'<span style="font-size:10px;color:var(--t-muted)">pid {desktop.pid} &mdash; {mem:.0f} MB</span>'
+                    f'</div></div>')
+        return '<div style="padding:1rem;color:var(--t-muted);font-size:11px">[ no claude code instances running ]</div>'
+
+    parts = []
+    for inst in instances:
+        # ── attention flags ───────────────────────────────────────────────────
+        flags_html = ""
+        if inst.attention:
+            flag_parts = []
+            for f in inst.attention:
+                css = "attention-flag critical" if f.kind in ("context", "ratelimit") else "attention-flag"
+                flag_parts.append(f'<span class="{css}" title="{_esc(f.message)}">{_esc(f.kind)}</span>')
+            flags_html = f'<div class="attention-flags">{"".join(flag_parts)}</div>'
+
+        # ── context bar ───────────────────────────────────────────────────────
+        ctx_html = "—"
+        if inst.tokens:
+            pct = inst.tokens.context_pct
+            fill_css = "ctx-fill crit" if pct >= 90 else ("ctx-fill warn" if pct >= 75 else "ctx-fill")
+            ctx_html = (f'<span>{pct:.0f}%</span>'
+                        f'<span class="ctx-bar"><span class="{fill_css}" style="width:{min(pct,100):.0f}%"></span></span>'
+                        f' {inst.tokens.context_used:,}&thinsp;/&thinsp;{inst.tokens.context_max:,} tok')
+
+        # ── cost ──────────────────────────────────────────────────────────────
+        cost_html = "—"
+        if inst.tokens and inst.tokens.session_cost > 0:
+            cost_html = f'<span>${inst.tokens.session_cost:.3f}</span> session'
+
+        # ── current tool ─────────────────────────────────────────────────────
+        tool_html = "—"
+        if inst.current_tool:
+            tc = inst.current_tool
+            status_col = "var(--t-accent)" if tc.status == "active" else "var(--t-muted)"
+            tool_html = f'<span style="color:{status_col}">{_esc(tc.name)}</span> {_esc(tc.summary)}'
+
+        # ── model ─────────────────────────────────────────────────────────────
+        model_short = ""
+        if inst.tokens and inst.tokens.model:
+            m = inst.tokens.model
+            if "opus" in m:      model_short = "opus"
+            elif "sonnet" in m:  model_short = "sonnet"
+            elif "haiku" in m:   model_short = "haiku"
+            else:                model_short = m.split("-")[1] if "-" in m else m
+
+        # ── agents ───────────────────────────────────────────────────────────
+        agents_html = ""
+        if inst.agents:
+            rows = []
+            for ag in inst.agents[:4]:
+                st_sym = "&#9679;" if ag.status == "active" else "&#9675;"
+                rows.append(f'<div class="agent-row">{st_sym} <span>{_esc(ag.summary[:40])}</span>'
+                            f' &mdash; {ag.tool_count} tools</div>')
+            agents_html = f'<div class="agents-list">{"".join(rows)}</div>'
+
+        # ── focus button ─────────────────────────────────────────────────────
+        focus_btn = ""
+        if inst.terminal_app:
+            focus_btn = (f'<button class="focus-btn" '
+                         f'hx-post="/claude/focus/{inst.pid}" hx-swap="none" '
+                         f'title="Focus {inst.terminal_app}">&#8594; {_esc(inst.terminal_app)}</button>')
+
+        # ── branch/version badge ──────────────────────────────────────────────
+        meta = []
+        if inst.git_branch:   meta.append(_esc(inst.git_branch))
+        if inst.version:      meta.append(f'v{_esc(inst.version)}')
+        if model_short:       meta.append(model_short)
+        meta_html = ' &middot; '.join(meta)
+
+        parts.append(f'''<div class="claude-instance">
+  <div class="claude-head">
+    <strong style="font-size:12px">{_esc(inst.project_name)}</strong>
+    <span style="font-size:10px;color:var(--t-muted)">{_esc(inst.cwd)}</span>
+    <span style="font-size:10px;color:var(--t-muted);margin-left:auto">{meta_html}</span>
+    {focus_btn}
+  </div>
+  <div class="claude-body">
+    <div class="claude-stat">pid <span>{inst.pid}</span> &middot; up <span>{_uptime_str(inst.uptime_s)}</span> &middot; cpu <span>{inst.cpu:.1f}%</span> &middot; mem <span>{inst.mem_mb:.0f}&thinsp;MB</span></div>
+    <div class="claude-stat">context: {ctx_html}</div>
+    <div class="claude-stat">tool: {tool_html}</div>
+    <div class="claude-stat">cost: {cost_html}</div>
+  </div>
+  {agents_html}
+  {flags_html}
+</div>''')
+
+    return "\n".join(parts)
+
+
+def html_daily_stats() -> str:
+    if not HAS_CM:
+        return ""
+    try:
+        ds = _cm.daily_stats()
+    except Exception:
+        return '<div style="font-size:11px;color:var(--t-muted)">stats unavailable</div>'
+
+    # 7-day activity sparkline (message counts)
+    _BLOCKS = "▁▂▃▄▅▆▇█"
+    max_w = max(ds.cost_week) if ds.cost_week and max(ds.cost_week) > 0 else 1
+    spark = ""
+    for v in reversed(ds.cost_week):
+        idx = min(int(v / max_w * 8), 7)
+        spark += f'<span style="color:var(--t-c0)">{_BLOCKS[idx]}</span>'
+
+    return (f'<div class="card"><div class="card-body" style="display:flex;gap:2rem;flex-wrap:wrap;align-items:center">'
+            f'<div class="claude-stat">cost today: <span>${ds.cost_today:.2f}</span></div>'
+            f'<div class="claude-stat">sessions today: <span>{ds.sessions_today}</span></div>'
+            f'<div class="claude-stat">tokens in: <span>{ds.tokens_today_in:,}</span> &middot; out: <span>{ds.tokens_today_out:,}</span></div>'
+            f'<div class="claude-stat" style="margin-left:auto">7-day activity: {spark}</div>'
+            f'</div></div>')
+
+
+def _esc(s) -> str:
+    """Minimal HTML escaping for untrusted strings."""
+    if not s:
+        return ""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
 
 
 # ── page ──────────────────────────────────────────────────────────────────────
@@ -699,6 +1009,19 @@ function playChart(chartId,btn){
   _sessions[chartId]={raf:requestAnimationFrame(tick),btn:btn,oscs:sessionOscs};
 }
 
+// ── Tab system ────────────────────────────────────────────────────────────────
+function switchTab(name,btn){
+  localStorage.setItem('mac-monitor-tab',name);
+  document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
+  btn.classList.add('active');
+  htmx.ajax('GET','/tab/'+name,{target:'#tab-content',swap:'innerHTML'});
+}
+document.addEventListener('DOMContentLoaded',function(){
+  var tab=localStorage.getItem('mac-monitor-tab')||'system';
+  var btn=document.getElementById('tab-btn-'+tab);
+  if(btn)switchTab(tab,btn);
+});
+
 // Spacebar stops all active playback sessions
 document.addEventListener('keydown',function(e){
   if(e.code==='Space'&&e.target.tagName!=='INPUT'){
@@ -734,14 +1057,7 @@ html,body{
 }
 .menubar-apple{font-size:15px;font-weight:bold}
 
-/* search */
-.search-wrap{position:relative;flex:1;max-width:380px}
-.search-input{
-  width:100%;border:1px solid var(--t-border);padding:1px 6px;
-  font-family:inherit;font-size:11px;background:var(--t-panel);color:var(--t-fg);outline:none;
-}
-.search-input:focus{outline:1px solid var(--t-accent);outline-offset:1px}
-.search-input::placeholder{color:var(--t-muted)}
+/* (search styles now in .search-row block) */
 #search-drop{
   display:none;position:absolute;top:100%;left:0;right:0;
   background:var(--t-panel2);border:1px solid var(--t-border);border-top:none;
@@ -749,8 +1065,6 @@ html,body{
   color:var(--t-fg);
 }
 
-/* page */
-.page{max-width:1100px;margin:0 auto;padding:1rem 1rem 4rem}
 
 /* section labels */
 .group{
@@ -822,24 +1136,99 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 /* play button — overrides base button sizing */
 .play-btn{margin-left:.5rem;font-size:9px;padding:0 5px;box-shadow:1px 1px 0 #000}
 
+/* search row — own row below menubar */
+.search-row{
+  background:var(--t-bg);border-bottom:1px solid var(--t-border);
+  padding:5px 1rem;position:sticky;top:24px;z-index:99;
+}
+.search-row-inner{position:relative;max-width:640px}
+.search-row .search-input{
+  width:100%;border:1px solid var(--t-accent);padding:3px 8px;
+  font-family:inherit;font-size:12px;background:var(--t-panel);color:var(--t-fg);outline:none;
+}
+.search-row .search-input:focus{outline:2px solid var(--t-accent);outline-offset:1px}
+.search-row .search-input::placeholder{color:var(--t-muted);font-weight:normal}
+.search-row #search-drop{
+  display:none;position:absolute;top:100%;left:0;right:0;
+  background:var(--t-panel2);border:1px solid var(--t-border);border-top:none;
+  padding:.3rem .5rem;z-index:200;max-height:260px;overflow-y:auto;color:var(--t-fg);
+}
+
+/* tab bar */
+.tab-bar{
+  display:flex;gap:0;padding:0 1rem;
+  background:var(--t-bg);border-bottom:2px solid var(--t-border);
+  position:sticky;top:58px;z-index:98;
+}
+.tab-btn{
+  border:1px solid transparent;border-bottom:none;padding:4px 14px;
+  font-size:10px;font-weight:bold;letter-spacing:.06em;text-transform:uppercase;
+  cursor:pointer;background:transparent;color:var(--t-muted);
+  box-shadow:none;position:relative;bottom:-2px;
+}
+.tab-btn:hover{color:var(--t-fg);border-color:var(--t-border)}
+.tab-btn.active{
+  background:var(--t-bg);color:var(--t-accent);
+  border-color:var(--t-accent);border-bottom:2px solid var(--t-bg);
+}
+
+/* tab content */
+#tab-content .page{max-width:1100px;margin:0 auto;padding:1rem 1rem 4rem}
+
+/* claude tab */
+.claude-instance{
+  background:var(--t-panel2);border:1px solid var(--t-border);
+  margin-bottom:1rem;
+}
+.claude-head{
+  background:repeating-linear-gradient(
+    180deg,var(--t-stripe) 0px,var(--t-stripe) 1px,var(--t-panel2) 1px,var(--t-panel2) 2px);
+  border-bottom:1px solid var(--t-border);padding:.3rem .7rem;
+  display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;
+}
+.claude-body{padding:.6rem .9rem;display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem}
+@media(max-width:680px){.claude-body{grid-template-columns:1fr}}
+.claude-stat{font-size:11px}
+.claude-stat span{color:var(--t-accent);font-weight:bold}
+.ctx-bar{
+  display:inline-block;height:6px;background:var(--t-border);
+  width:80px;vertical-align:middle;margin-left:4px;position:relative;
+}
+.ctx-fill{
+  display:block;height:100%;background:var(--t-c0);
+  transition:width .3s;
+}
+.ctx-fill.warn{background:var(--t-c1)}
+.ctx-fill.crit{background:#c0392b}
+.attention-flags{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem}
+.attention-flag{
+  font-size:9px;font-weight:bold;padding:1px 5px;
+  border:1px solid var(--t-accent);color:var(--t-accent);text-transform:uppercase;
+}
+.attention-flag.critical{border-color:#c0392b;color:#c0392b}
+.focus-btn{
+  font-size:9px;padding:1px 6px;border:1px solid var(--t-border);
+  background:var(--t-panel);color:var(--t-muted);cursor:pointer;
+  font-family:inherit;font-weight:bold;box-shadow:none;
+}
+.focus-btn:hover{color:var(--t-accent);border-color:var(--t-accent)}
+.sparkline-bar{display:inline-block;width:8px;background:var(--t-c0);margin-right:1px;vertical-align:bottom}
+.daily-row{display:flex;align-items:flex-end;gap:.2rem;margin-top:.3rem;height:24px}
+.agents-list{margin-top:.4rem;font-size:11px}
+.agent-row{padding:.15rem 0;border-bottom:1px solid var(--t-border);color:var(--t-muted)}
+.agent-row span{color:var(--t-fg)}
+
 </style>
 </head>
 <body>
 <span hx-get="/theme" hx-trigger="every 5s" hx-swap="outerHTML" hx-target="#theme-style" style="display:none"></span>
 
 <div class="menubar">
-  <div class="search-wrap">
-    <input class="search-input" id="search-input" name="q" type="text"
-           placeholder="search metrics &amp; processes..."
-           hx-get="/search" hx-trigger="keyup changed delay:250ms"
-           hx-target="#search-drop"
-           onfocus="document.getElementById('search-drop').style.display='block'"
-           onblur="setTimeout(function(){document.getElementById('search-drop').style.display=''},200)">
-    <div id="search-drop"></div>
-  </div>
+  <div class="menubar-apple">&#63743;</div>
+  <span style="font-size:10px;font-weight:bold;letter-spacing:.06em">MAC MONITOR</span>
   <span style="margin-left:auto;display:flex;align-items:center;gap:.5rem">
     <label style="font-size:10px;font-weight:bold">BPM</label>
-    <input type="number" id="bpm-input" value="200" min="20" max="600"
+    <input type="number" id="bpm-input" value="300" min="20" max="600"
            style="width:52px;border:1px solid var(--t-border);padding:0 4px;font-family:inherit;
                   font-size:11px;background:var(--t-panel);color:var(--t-accent);outline:none;height:16px">
     <label style="font-size:10px;font-weight:bold;display:flex;align-items:center;gap:3px;cursor:pointer">
@@ -850,125 +1239,25 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
   </span>
 </div>
 
-<div class="page">
-
-  <!-- CPU Score -->
-  <div class="group">CPU</div>
-  <div class="card">
-    <div class="card-head">
-      <span class="card-title">Per-Core Activity &mdash; 60s rolling</span>
-      <button onclick="playChart('cpu-chart',this)" class="play-btn">[ PLAY ]</button>
-      <span class="badge">every 2s</span>
-    </div>
-    <div class="card-body">
-      <div id="cpu-chart" hx-get="/metrics/cpu" hx-trigger="load, every 2s" hx-swap="innerHTML">
-        <div style="height:270px"></div>
-      </div>
-    </div>
+<div class="search-row">
+  <div class="search-row-inner">
+    <input class="search-input" id="search-input" name="q" type="text"
+           placeholder="search metrics &amp; processes..."
+           hx-get="/search" hx-trigger="keyup changed delay:250ms"
+           hx-target="#search-drop"
+           onfocus="document.getElementById('search-drop').style.display='block'"
+           onblur="setTimeout(function(){document.getElementById('search-drop').style.display=''},200)">
+    <div id="search-drop"></div>
   </div>
-
-  <!-- Memory -->
-  <div class="group">Memory</div>
-  <div class="grid-2">
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">RAM &amp; Swap &mdash; 60s rolling</span>
-        <button onclick="playChart('mem-chart',this)" class="play-btn">[ PLAY ]</button>
-        <span class="badge">every 2s</span>
-      </div>
-      <div class="card-body">
-        <div id="mem-chart" hx-get="/metrics/memory" hx-trigger="load, every 2s" hx-swap="innerHTML">
-          <div style="height:150px"></div>
-        </div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">Utilisation Gauges</span>
-        <span class="badge">every 2s</span>
-      </div>
-      <div class="card-body">
-        <div hx-get="/metrics/gauges" hx-trigger="load, every 2s" hx-swap="innerHTML">
-          <div style="min-height:100px"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- I/O -->
-  <div class="group">I/O</div>
-  <div class="grid-2">
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">Network &mdash; TX / RX</span>
-        <button onclick="playChart('net-chart',this)" class="play-btn">[ PLAY ]</button>
-        <span class="badge">every 2s</span>
-      </div>
-      <div class="card-body">
-        <div id="net-chart" hx-get="/metrics/network" hx-trigger="load, every 2s" hx-swap="innerHTML">
-          <div style="height:160px"></div>
-        </div>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-head">
-        <span class="card-title">Disk &mdash; Read / Write</span>
-        <button onclick="playChart('disk-chart',this)" class="play-btn">[ PLAY ]</button>
-        <span class="badge">every 2s</span>
-      </div>
-      <div class="card-body">
-        <div id="disk-chart" hx-get="/metrics/disk" hx-trigger="load, every 2s" hx-swap="innerHTML">
-          <div style="height:160px"></div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Processes -->
-  <div class="group">Processes</div>
-  <div class="card">
-    <div class="card-head">
-      <span class="card-title">Top 30 Processes</span>
-      <span class="badge">every 3s</span>
-    </div>
-    <div class="card-body">
-      <div style="display:flex;gap:.5rem;align-items:center;margin-bottom:.6rem">
-        <input type="text" id="proc-q" name="q"
-               placeholder="filter by name..."
-               style="width:220px"
-               hx-get="/processes"
-               hx-trigger="keyup changed delay:300ms"
-               hx-target="#proc-tbody"
-               hx-include="#proc-q,#proc-sort">
-        <input type="hidden" id="proc-sort" name="sort" value="cpu">
-        <span class="htmx-indicator">[ searching... ]</span>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th hx-get="/processes?sort=pid"
-                hx-target="#proc-tbody" hx-include="#proc-q"
-                onclick="document.getElementById('proc-sort').value='pid'">PID</th>
-            <th hx-get="/processes?sort=name"
-                hx-target="#proc-tbody" hx-include="#proc-q"
-                onclick="document.getElementById('proc-sort').value='name'">Name</th>
-            <th hx-get="/processes?sort=cpu"
-                hx-target="#proc-tbody" hx-include="#proc-q"
-                onclick="document.getElementById('proc-sort').value='cpu'">CPU %</th>
-            <th hx-get="/processes?sort=mem"
-                hx-target="#proc-tbody" hx-include="#proc-q"
-                onclick="document.getElementById('proc-sort').value='mem'">MEM %</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody id="proc-tbody"
-               hx-get="/processes" hx-trigger="load, every 3s"
-               hx-swap="innerHTML"></tbody>
-      </table>
-    </div>
-  </div>
-
 </div>
+
+<div class="tab-bar">
+  <button class="tab-btn" id="tab-btn-system" onclick="switchTab('system',this)">[ System ]</button>
+  <button class="tab-btn" id="tab-btn-claude" onclick="switchTab('claude',this)">[ Claude ]</button>
+</div>
+
+<div id="tab-content"></div>
+
 </body>
 </html>"""
 
