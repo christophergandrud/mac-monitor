@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Mac System Monitor — graph-paper B&W + htmx + audible score charts."""
+"""Mac System Monitor — htmx + audible score charts + spring palette."""
 
-import collections, time, os, platform, socket, random
+import collections, time, os, platform, socket, random, json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -17,6 +17,13 @@ BUF  = 60
 PORT = 8787
 DASH = ["", "6,3", "2,3", "8,2,2,2", "1,4", "5,2,1,2",
         "4,2", "3,1,1,1", "10,3", "5,1,2,1", "4,1", "2,2"]
+
+# High-luminance spring palette — readable under ambient light on dark bg
+C_GREEN = "#C8FF47"   # electric spring green
+C_PINK  = "#FF6BB5"   # hot blossom pink
+C_BLUE  = "#4DDDFF"   # bright cyan
+INK = [C_GREEN, C_PINK, C_BLUE, C_GREEN, C_PINK, C_BLUE,
+       C_GREEN, C_PINK, C_BLUE, C_GREEN, C_PINK, C_BLUE]
 
 # ── rolling buffers ───────────────────────────────────────────────────────────
 _nc      = (psutil.cpu_count(logical=True) or 4) if HAS_PSUTIL else 4
@@ -76,6 +83,21 @@ def maybe_collect():
     except Exception:
         pass
     _p_t = now
+
+
+def _val_to_hz(v, ymax, midi_lo=52, midi_hi=84):
+    """Map value → Hz via MIDI scale (perceptually equal semitone steps)."""
+    ratio = min(max(v, 0), ymax) / max(ymax, 0.001)
+    midi  = midi_lo + ratio * (midi_hi - midi_lo)
+    return int(round(440 * 2 ** ((midi - 69) / 12)))
+
+
+def _slope_cents(vs, i, ymax):
+    """Proportional slope → detune cents, clamped to ±80."""
+    if i == 0:
+        return 0
+    raw = (vs[i] - vs[i - 1]) / max(ymax, 0.001) * 400
+    return int(max(-80, min(80, raw)))
 
 
 def fmt_bytes(b):
@@ -146,19 +168,21 @@ def _make_pts(buf, pl, pr, pt, pb, w, h, ymax):
             for i in range(n)]
 
 
-def _hover_rects(buf, pl, pr, pt, pb, w, h, ymax):
+def _hover_rects(buf, pl, pr, pt, pb, w, h, ymax, voice=0, midi_lo=52, midi_hi=84,
+                 voice_fn=None):
+    """voice_fn(i) overrides the fixed voice per column (used by CPU chart)."""
     vs = list(buf); n = len(vs)
     iw = w - pl - pr; ih = h - pt - pb
     cw = max(1, iw // n)
     out = ""
     for i, v in enumerate(vs):
-        freq = int(200 + min(v, ymax) / ymax * 1000)
-        det  = (30 if i > 0 and v > vs[i-1] else
-               -30 if i > 0 and v < vs[i-1] else 0)
-        x = pl + int(i / (n - 1) * iw)
+        freq = _val_to_hz(v, ymax, midi_lo, midi_hi)
+        det  = _slope_cents(vs, i, ymax)
+        vi   = voice_fn(i) if voice_fn else voice
+        x    = pl + int(i / (n - 1) * iw)
         out += (f'<rect x="{x}" y="{pt}" width="{cw+1}" height="{ih}" '
                 f'fill="transparent" style="cursor:crosshair" '
-                f'onmouseover="window._htmxBeep&&window._htmxBeep({freq},{det})"/>')
+                f'onmouseover="window._htmxBeep&&window._htmxBeep({freq},{det},{vi})"/>')
     return out
 
 
@@ -169,23 +193,40 @@ def _grid(pl, pr, pt, pb, w, h, ymax, pcts, fmt_fn):
         y  = pt + ih - int(pct / 100 * ih)
         yv = ymax * pct / 100
         out += (f'<line x1="{pl}" y1="{y}" x2="{w-pr}" y2="{y}" '
-                f'stroke="#aaa" stroke-width="0.4" stroke-dasharray="2,3"/>'
+                f'stroke="#2a2a2a" stroke-width="0.5" stroke-dasharray="2,3"/>'
                 f'<text x="{pl-3}" y="{y+3}" font-size="7" text-anchor="end" '
-                f'fill="#000" font-family="Courier,monospace">{fmt_fn(yv)}</text>')
+                f'fill="#555" font-family="Courier,monospace">{fmt_fn(yv)}</text>')
     return out
 
 
 def _axes(pl, pr, pt, pb, w, h):
     ih = h - pt - pb
     return (f'<line x1="{pl}" y1="{pt}" x2="{pl}" y2="{pt+ih}" '
-            f'stroke="#000" stroke-width="1.5"/>'
+            f'stroke="#444" stroke-width="1.5"/>'
             f'<line x1="{pl}" y1="{pt+ih}" x2="{w-pr}" y2="{pt+ih}" '
-            f'stroke="#000" stroke-width="1.5"/>')
+            f'stroke="#444" stroke-width="1.5"/>')
+
+
+def _svg_line(buf, pl, pr, pt, pb, w, h, ymax, dash, label, color,
+              opacity=0.82, label_fn=None):
+    """Render one polyline with an end-label. label_fn(vs) formats the current value."""
+    if label_fn is None:
+        label_fn = lambda vs: fmt_bytes(vs[-1])
+    pts = _make_pts(buf, pl, pr, pt, pb, w, h, ymax)
+    vs  = list(buf)
+    d   = f"M{pts[0][0]},{pts[0][1]}" + "".join(f" L{x},{y}" for x, y in pts[1:])
+    da  = f'stroke-dasharray="{dash}"' if dash else ""
+    lx, ly = pts[-1]
+    tag = (f'<text x="{lx-2}" y="{max(ly-5, pt+10)}" text-anchor="end" '
+           f'font-size="8" fill="{color}" font-family="Courier,monospace">'
+           f'{label}:{label_fn(vs)}</text>')
+    return (f'<path d="{d}" fill="none" stroke="{color}" '
+            f'stroke-width="1.2" {da} opacity="{opacity}"/>{tag}')
 
 
 def _stamp(w, h):
     return (f'<text x="{w-8}" y="{h}" text-anchor="end" font-size="8" '
-            f'fill="#666" font-family="Courier,monospace">'
+            f'fill="#aaa" font-family="Courier,monospace">'
             f'upd {time.strftime("%H:%M:%S")}</text>')
 
 
@@ -198,34 +239,41 @@ def svg_cpu_score(*, w=720, h=270):
     grid = _grid(pl, pr, pt, pb, w, h, 100,
                  (20, 40, 60, 80, 100), lambda v: f"{int(v)}%")
 
-    # column hover zones — avg of all cores, sweep to hear history
-    avgs = [sum(list(b)[i] for b in CPU_BUFS) / _nc for i in range(n)]
-    cw   = max(1, iw // n)
-    hov  = ""
-    for i, avg in enumerate(avgs):
-        freq = int(200 + avg / 100 * 1000)
-        det  = (30 if i > 0 and avg > avgs[i-1] else
-               -30 if i > 0 and avg < avgs[i-1] else 0)
-        x = pl + int(i / (n - 1) * iw)
-        hov += (f'<rect x="{x}" y="{pt}" width="{cw+1}" height="{ih}" '
-                f'fill="transparent" style="cursor:crosshair" '
-                f'onmouseover="window._htmxBeep&&window._htmxBeep({freq},{det})"/>')
+    snap = [list(b) for b in CPU_BUFS]
+    avgs = [sum(snap[c][i] for c in range(_nc)) / _nc for i in range(n)]
+    # Voice per column = dominant core's index mod 3 — timbre shifts as load migrates
+    hov = _hover_rects(
+        collections.deque(avgs), pl, pr, pt, pb, w, h, 100,
+        midi_lo=52, midi_hi=76,
+        voice_fn=lambda i: max(range(_nc), key=lambda c: snap[c][i]) % 3,
+    )
 
     lines = ""
     for ci, buf in enumerate(CPU_BUFS):
-        dash = DASH[ci % len(DASH)]
-        sw   = 1.5 if ci % 3 == 0 else (0.9 if ci % 3 == 1 else 1.2)
-        pts  = _make_pts(buf, pl, pr, pt, pb, w, h, 100)
-        d    = (f"M{pts[0][0]},{pts[0][1]}" +
-                "".join(f" L{x},{y}" for x, y in pts[1:]))
-        da   = f'stroke-dasharray="{dash}"' if dash else ""
-        lines += (f'<path d="{d}" fill="none" stroke="#000" '
-                  f'stroke-width="{sw}" {da} opacity="0.62"/>')
+        dash  = DASH[ci % len(DASH)]
+        color = INK[ci % len(INK)]
+        sw    = 1.5 if ci % 3 == 0 else (0.9 if ci % 3 == 1 else 1.2)
+        pts   = _make_pts(buf, pl, pr, pt, pb, w, h, 100)
+        d     = (f"M{pts[0][0]},{pts[0][1]}" +
+                 "".join(f" L{x},{y}" for x, y in pts[1:]))
+        da    = f'stroke-dasharray="{dash}"' if dash else ""
+        lines += (f'<path d="{d}" fill="none" stroke="{color}" '
+                  f'stroke-width="{sw}" {da} opacity="0.72"/>')
         lx, ly = pts[-1]
         lines += (f'<text x="{lx+3}" y="{min(ly+3, h-pb-2)}" font-size="7" '
-                  f'fill="#000" font-family="Courier,monospace">C{ci}</text>')
+                  f'fill="{color}" font-family="Courier,monospace">C{ci}</text>')
 
+    # Each time step = [avg-voice0, max-core-voice1, min-core-voice2] played as a chord
+    freqs_data = json.dumps([
+        [
+            [_val_to_hz(avgs[i], 100, 52, 76), _slope_cents(avgs, i, 100), 0],
+            [_val_to_hz(max(snap[c][i] for c in range(_nc)), 100, 52, 76), _slope_cents(avgs, i, 100), 1],
+            [_val_to_hz(min(snap[c][i] for c in range(_nc)), 100, 52, 76), _slope_cents(avgs, i, 100), 2],
+        ]
+        for i, a in enumerate(avgs)
+    ])
     return (f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
+            f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
             f'style="width:100%;height:auto;display:block">'
             f'{grid}{lines}{_axes(pl,pr,pt,pb,w,h)}{hov}{_stamp(w,h)}</svg>')
 
@@ -237,53 +285,48 @@ def svg_dual(buf_a, buf_b, la, lb, *, w=460, h=160):
 
     grid = _grid(pl, pr, pt, pb, w, h, ymax,
                  (25, 50, 75, 100), fmt_bytes)
-    hovA = _hover_rects(buf_a, pl, pr, pt, pb, w, h, ymax)
-    hovB = _hover_rects(buf_b, pl, pr, pt, pb, w, h, ymax)
+    hovA = _hover_rects(buf_a, pl, pr, pt, pb, w, h, ymax, voice=0, midi_lo=56, midi_hi=80)
+    hovB = _hover_rects(buf_b, pl, pr, pt, pb, w, h, ymax, voice=1, midi_lo=56, midi_hi=80)
 
-    def path(buf, dash, label):
-        pts = _make_pts(buf, pl, pr, pt, pb, w, h, ymax)
-        vs  = list(buf)
-        d   = (f"M{pts[0][0]},{pts[0][1]}" +
-               "".join(f" L{x},{y}" for x, y in pts[1:]))
-        da  = f'stroke-dasharray="{dash}"' if dash else ""
-        lx, ly = pts[-1]
-        tag = (f'<text x="{lx-2}" y="{max(ly-5, pt+10)}" text-anchor="end" '
-               f'font-size="8" fill="#000" font-family="Courier,monospace">'
-               f'{label}:{fmt_bytes(vs[-1])}</text>')
-        return (f'<path d="{d}" fill="none" stroke="#000" '
-                f'stroke-width="1.2" {da} opacity="0.82"/>{tag}')
-
+    vs_a = list(buf_a); vs_b = list(buf_b)
+    freqs_data = json.dumps([
+        [
+            [_val_to_hz(vs_a[i], ymax, 56, 80), _slope_cents(vs_a, i, ymax), 0],
+            [_val_to_hz(vs_b[i], ymax, 56, 80), _slope_cents(vs_b, i, ymax), 1],
+        ]
+        for i in range(len(vs_a))
+    ])
     return (f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
+            f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
             f'style="width:100%;height:auto;display:block">'
-            f'{grid}{path(buf_a,"",la)}{path(buf_b,"6,3",lb)}'
+            f'{grid}'
+            f'{_svg_line(buf_a,pl,pr,pt,pb,w,h,ymax,"",la,C_GREEN)}'
+            f'{_svg_line(buf_b,pl,pr,pt,pb,w,h,ymax,"6,3",lb,C_PINK)}'
             f'{_axes(pl,pr,pt,pb,w,h)}{hovA}{hovB}{_stamp(w,h)}</svg>')
 
 
 def svg_mem(*, w=460, h=150):
     pl, pr, pt, pb = 32, 8, 12, 22
-    hov_m = _hover_rects(MEM_BUF,  pl, pr, pt, pb, w, h, 100)
-    hov_s = _hover_rects(SWAP_BUF, pl, pr, pt, pb, w, h, 100)
+    hov_m = _hover_rects(MEM_BUF,  pl, pr, pt, pb, w, h, 100, voice=0, midi_lo=60, midi_hi=84)
+    hov_s = _hover_rects(SWAP_BUF, pl, pr, pt, pb, w, h, 100, voice=2, midi_lo=60, midi_hi=84)
     grid  = _grid(pl, pr, pt, pb, w, h, 100,
                   (25, 50, 75, 100), lambda v: f"{int(v)}%")
 
-    def path(buf, dash, label, op):
-        pts = _make_pts(buf, pl, pr, pt, pb, w, h, 100)
-        vs  = list(buf)
-        d   = (f"M{pts[0][0]},{pts[0][1]}" +
-               "".join(f" L{x},{y}" for x, y in pts[1:]))
-        da  = f'stroke-dasharray="{dash}"' if dash else ""
-        lx, ly = pts[-1]
-        tag = (f'<text x="{lx-2}" y="{max(ly-5, pt+10)}" text-anchor="end" '
-               f'font-size="8" fill="#000" font-family="Courier,monospace">'
-               f'{label}:{vs[-1]:.1f}%</text>')
-        return (f'<path d="{d}" fill="none" stroke="#000" '
-                f'stroke-width="1.2" {da} opacity="{op}"/>{tag}')
-
+    pct_label = lambda vs: f"{vs[-1]:.1f}%"
+    vs_m = list(MEM_BUF); vs_s = list(SWAP_BUF)
+    freqs_data = json.dumps([
+        [
+            [_val_to_hz(vs_m[i], 100, 60, 84), _slope_cents(vs_m, i, 100), 0],
+            [_val_to_hz(vs_s[i], 100, 60, 84), _slope_cents(vs_s, i, 100), 2],
+        ]
+        for i in range(len(vs_m))
+    ])
     return (f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
+            f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
             f'style="width:100%;height:auto;display:block">'
             f'{grid}'
-            f'{path(MEM_BUF,  "", "MEM", "0.85")}'
-            f'{path(SWAP_BUF, "5,3", "SWAP", "0.5")}'
+            f'{_svg_line(MEM_BUF, pl,pr,pt,pb,w,h,100,"","MEM",C_GREEN,0.85,pct_label)}'
+            f'{_svg_line(SWAP_BUF,pl,pr,pt,pb,w,h,100,"5,3","SWAP",C_BLUE,0.75,pct_label)}'
             f'{_axes(pl,pr,pt,pb,w,h)}{hov_m}{hov_s}{_stamp(w,h)}</svg>')
 
 
@@ -298,16 +341,16 @@ def html_gauges():
     rows = ""
     for label, pct in items:
         pct  = min(max(pct, 0), 100)
-        freq = int(200 + pct / 100 * 1000)
+        freq = _val_to_hz(pct, 100, 60, 84)
         rows += (
             f'<div style="margin:.5rem 0">'
             f'<div style="display:flex;justify-content:space-between;'
             f'font-size:11px;font-weight:bold;font-family:Courier,monospace">'
             f'<span>{label}</span><span>{pct:.1f}%</span></div>'
-            f'<div style="background:#fff;border:1px solid #000;height:10px;'
+            f'<div style="background:#1a1a1a;border:1px solid #333;height:10px;'
             f'overflow:hidden;cursor:crosshair" '
             f'onmouseover="window._htmxBeep&&window._htmxBeep({freq})">'
-            f'<div style="background:#000;width:{pct:.1f}%;height:100%"></div>'
+            f'<div style="background:{C_GREEN};width:{pct:.1f}%;height:100%"></div>'
             f'</div></div>'
         )
     rows += (f'<p style="font-size:9px;font-family:Courier,monospace;margin-top:.5rem">'
@@ -333,10 +376,6 @@ def html_sysinfo():
     )
 
 
-def _sort_arrow(col, active):
-    return " &#x25BC;" if col == active else ""
-
-
 def html_proc_rows(q="", sort="cpu"):
     procs = get_procs(q, sort)
     if not procs:
@@ -352,9 +391,9 @@ def html_proc_rows(q="", sort="cpu"):
             f'<td style="font-family:Courier,monospace;font-size:11px">{p["name"][:32]}</td>'
             f'<td style="font-family:Courier,monospace;font-size:11px">'
             f'<div style="display:flex;align-items:center;gap:.3rem">'
-            f'<div style="background:#fff;border:1px solid #000;'
+            f'<div style="background:#1a1a1a;border:1px solid #333;'
             f'width:48px;height:6px;flex-shrink:0">'
-            f'<div style="background:#000;width:{bw}%;height:100%"></div></div>'
+            f'<div style="background:{C_PINK};width:{bw}%;height:100%"></div></div>'
             f'{p["cpu"]:.1f}%</div></td>'
             f'<td style="font-family:Courier,monospace;font-size:11px">{p["mem"]:.1f}%</td>'
             f'<td style="font-family:Courier,monospace;font-size:11px">{p["status"]}</td>'
@@ -369,6 +408,7 @@ def html_search_results(q):
     q_low = q.lower()
     maybe_collect()
 
+    si = get_sysinfo()
     KEYWORDS = {
         "cpu":     ("CPU AVG",  f"{sum(b[-1] for b in CPU_BUFS) / _nc:.1f}%"),
         "mem":     ("MEMORY",   f"{MEM_BUF[-1]:.1f}%"),
@@ -377,15 +417,17 @@ def html_search_results(q):
         "net":     ("NETWORK",  f"TX {fmt_bytes(NET_TX[-1])}  RX {fmt_bytes(NET_RX[-1])}"),
         "network": ("NETWORK",  f"TX {fmt_bytes(NET_TX[-1])}  RX {fmt_bytes(NET_RX[-1])}"),
         "disk":    ("DISK",     f"R {fmt_bytes(DISK_R[-1])}  W {fmt_bytes(DISK_W[-1])}"),
-        "load":    ("LOAD AVG", get_sysinfo()["load"]),
-        "uptime":  ("UPTIME",   get_sysinfo()["up"]),
-        "ram":     ("RAM",      get_sysinfo()["ram"]),
-        "cores":   ("CORES",    str(get_sysinfo()["cores"])),
+        "load":    ("LOAD AVG", si["load"]),
+        "uptime":  ("UPTIME",   si["up"]),
+        "ram":     ("RAM",      si["ram"]),
+        "cores":   ("CORES",    str(si["cores"])),
     }
 
     out = ""
+    seen = set()
     for kw, (label, val) in KEYWORDS.items():
-        if q_low in kw or kw in q_low:
+        if (q_low in kw or kw in q_low) and label not in seen:
+            seen.add(label)
             out += (f'<div style="border-bottom:1px solid #ddd;padding:.2rem 0;'
                     f'font-family:Courier,monospace;font-size:11px">'
                     f'<b>{label}</b> &mdash; {val}</div>')
@@ -455,57 +497,185 @@ INDEX_HTML = """<!DOCTYPE html>
 <title>System Monitor</title>
 <script src="https://unpkg.com/htmx.org@1.9.12"></script>
 <script>
-window._htmxBeep=(function(){
-  var ctx=null,active=[],rev=null;
-  function mkRev(c){
-    var sr=c.sampleRate,len=Math.floor(sr*1.8),ir=c.createBuffer(2,len,sr);
+// ── Voice presets ─────────────────────────────────────────────────────────────
+// Spatially separated (pan L/R/C), distinct waveforms and chord voicings
+var _VOICES=[
+  {w:"sawtooth", r:[1,1.2599,1.4983,2], g:[0.55,0.30,0.30,0.18], Q:4, dur:0.55, pan:-0.55},
+  {w:"square",   r:[1,1.1892,1.4983,2], g:[0.40,0.25,0.25,0.15], Q:2, dur:0.45, pan: 0.55},
+  {w:"triangle", r:[1,1.3348,1.4983,2], g:[0.50,0.28,0.28,0.16], Q:7, dur:0.60, pan: 0.0},
+];
+
+// Snap Hz to nearest C-major pentatonic — guarantees consonance across streams
+function snapPentatonic(hz){
+  var midi=69+12*Math.log2(hz/440);
+  var pent=[0,2,4,7,9];
+  var oct=Math.floor((midi-60)/12);
+  var deg=((midi-60)%12+12)%12;
+  var nearest=pent.reduce(function(a,b){return Math.abs(b-deg)<Math.abs(a-deg)?b:a;});
+  return 440*Math.pow(2,(60+oct*12+nearest-69)/12);
+}
+
+// ── Audio engine ──────────────────────────────────────────────────────────────
+// Single shared AudioContext, compressor, and reverb.
+// playNote(freq, detune, voiceIdx, atTime, killPrev)
+//   atTime   — Web Audio timestamp; null = play immediately
+//   killPrev — true for hover (cancels same voice); false for scheduled playback
+var _audio=(function(){
+  var ctx=null,rev=null,comp=null,_vOscs=[[],[],[]];
+  function init(){
+    if(ctx)return;
+    ctx=new(window.AudioContext||window.webkitAudioContext)();
+    comp=ctx.createDynamicsCompressor();
+    comp.threshold.value=-24;comp.knee.value=8;
+    comp.ratio.value=4;comp.attack.value=0.003;comp.release.value=0.15;
+    comp.connect(ctx.destination);
+    var sr=ctx.sampleRate,len=Math.floor(sr*1.8),ir=ctx.createBuffer(2,len,sr);
     for(var ch=0;ch<2;ch++){var d=ir.getChannelData(ch);
       for(var s=0;s<len;s++)d[s]=(Math.random()*2-1)*Math.pow(1-s/len,2.4);}
-    var rv=c.createConvolver();rv.buffer=ir;
-    var rg=c.createGain();rg.gain.value=0.38;
-    rv.connect(rg);rg.connect(c.destination);return rv;
+    rev=ctx.createConvolver();rev.buffer=ir;
+    var rg=ctx.createGain();rg.gain.value=0.28;
+    rev.connect(rg);rg.connect(comp);
   }
-  return function(freq,detune){
-    if(!ctx)ctx=new(window.AudioContext||window.webkitAudioContext)();
-    if(!rev)rev=mkRev(ctx);
-    active.forEach(function(n){try{n.stop(0);}catch(e){}});active=[];
+  function playNote(freq,detune,voiceIdx,atTime,killPrev){
+    init();
+    var vi=(voiceIdx||0)%_VOICES.length;
+    var t=atTime||ctx.currentTime;
+    if(killPrev){
+      (_vOscs[vi]||[]).forEach(function(n){try{n.stop(t+0.025);}catch(e){}});
+      _vOscs[vi]=[];
+    }
+    var v=_VOICES[vi];
+    var pFreq=snapPentatonic(freq);
+    var brightMod=detune?Math.max(0.4,Math.min(2.8,1+detune/80)):1;
     var fi=ctx.createBiquadFilter();fi.type="lowpass";
-    fi.frequency.value=freq*5;fi.Q.value=4;
-    var ma=ctx.createGain();
-    fi.connect(ma);ma.connect(ctx.destination);ma.connect(rev);
-    [1,1.2599,1.4983,2].forEach(function(r,i){
+    fi.frequency.value=pFreq*4*brightMod;fi.Q.value=v.Q;
+    var pan=ctx.createStereoPanner?ctx.createStereoPanner():ctx.createPanner();
+    if(pan.pan)pan.pan.value=v.pan;
+    var ma=ctx.createGain();ma.gain.value=0;
+    fi.connect(pan);pan.connect(ma);ma.connect(comp);ma.connect(rev);
+    v.r.forEach(function(r,i){
       var o=ctx.createOscillator(),g=ctx.createGain();
-      o.type="sawtooth";o.frequency.value=freq*r;
+      o.type=v.w;o.frequency.value=pFreq*r;
       if(detune&&i===0)o.detune.value=detune;
-      g.gain.value=[0.55,0.30,0.30,0.18][i];
+      g.gain.value=v.g[i];
       o.connect(g);g.connect(fi);
-      o.start(ctx.currentTime);o.stop(ctx.currentTime+0.55);active.push(o);
+      o.start(t);o.stop(t+v.dur+0.06);
+      if(killPrev)_vOscs[vi].push(o);
     });
-    ma.gain.setValueAtTime(0,ctx.currentTime);
-    ma.gain.linearRampToValueAtTime(0.12,ctx.currentTime+0.018);
-    ma.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+0.55);
+    ma.gain.setTargetAtTime(0.13,t,0.008);
+    ma.gain.setTargetAtTime(0.0001,t+v.dur*0.45,0.04);
+  }
+  return{
+    getCtx:function(){init();return ctx;},
+    hover:function(freq,det,vi){playNote(freq,det,vi,null,true);},
+    schedule:function(freq,det,vi,at){playNote(freq,det,vi,at,false);}
   };
 })();
+
+// Interactive hover — kills same-voice previous note
+window._htmxBeep=function(freq,detune,voiceIdx){
+  _audio.hover(freq,detune,voiceIdx);
+};
+
+// Schedule a chord (array of [freq,det,voice]) at a specific audio timestamp
+function _scheduleChord(notes,atTime){
+  if(!notes||!notes.length)return;
+  notes.forEach(function(n){_audio.schedule(n[0],n[1],n[2]||0,atTime);});
+}
+
+// ── Cursor overlay ────────────────────────────────────────────────────────────
+// Appended as sibling of the htmx div so htmx innerHTML swaps don't remove it.
+// Position is expressed as % of wrapper width, mapped from SVG viewBox coords.
+function _getCursor(chartId){
+  var id=chartId+'-cursor',c=document.getElementById(id);
+  if(!c){
+    var el=document.getElementById(chartId);if(!el)return null;
+    var wrap=el.parentElement;
+    if(getComputedStyle(wrap).position==='static')wrap.style.position='relative';
+    c=document.createElement('div');c.id=id;
+    c.style.cssText='display:none;position:absolute;top:0;bottom:0;width:1px;'+
+      'background:#fff;opacity:0.5;pointer-events:none;z-index:10;';
+    wrap.appendChild(c);
+  }
+  return c;
+}
+
+function _cursorPct(chartId,pct){
+  // Re-read SVG layout attrs each frame — chart refreshes every 2s via htmx
+  var svg=document.getElementById(chartId);
+  svg=svg&&svg.querySelector('svg');
+  if(!svg)return null;
+  var pl=parseFloat(svg.getAttribute('data-pl')||32);
+  var iw=parseFloat(svg.getAttribute('data-iw')||652);
+  var sw=parseFloat(svg.getAttribute('data-w') ||720);
+  return (pl+pct*iw)/sw*100;
+}
+
+// ── Play sessions ─────────────────────────────────────────────────────────────
+// Each chart gets its own session keyed by chartId.
+// Audio is pre-scheduled on the Web Audio timeline (sample-accurate, no drift).
+// Cursor uses requestAnimationFrame + audioCtx.currentTime as ground truth.
+var _sessions={};
+
+function playChart(chartId,btn){
+  var sess=_sessions[chartId];
+  // Toggle off if same button pressed again
+  if(sess){
+    cancelAnimationFrame(sess.raf);
+    sess.btn.textContent="[ PLAY ]";
+    var cc=_getCursor(chartId);if(cc)cc.style.display='none';
+    delete _sessions[chartId];
+    if(sess.btn===btn)return;
+  }
+  var el=document.getElementById(chartId);
+  var svg=el&&el.querySelector('svg');
+  if(!svg)return;
+  var raw=svg.getAttribute('data-freqs');if(!raw)return;
+  var freqs=JSON.parse(raw);
+  var n=freqs.length;
+  var bpm=parseInt((document.getElementById('bpm-input')||{}).value)||200;
+  var stepSec=60/bpm;
+  var totalSec=(n-1)*stepSec;
+
+  // Pre-schedule all notes on the Web Audio clock — zero drift at any BPM
+  var ctx=_audio.getCtx();
+  var t0=ctx.currentTime+0.05;
+  freqs.forEach(function(chord,i){_scheduleChord(chord,t0+i*stepSec);});
+
+  var cursor=_getCursor(chartId);
+  btn.textContent="[ STOP ]";
+
+  function tick(){
+    var elapsed=ctx.currentTime-t0;
+    var pct=elapsed/totalSec;
+    if(pct>=1){
+      btn.textContent="[ PLAY ]";
+      if(cursor)cursor.style.display='none';
+      delete _sessions[chartId];
+      return;
+    }
+    if(cursor&&pct>=0){
+      var xp=_cursorPct(chartId,pct);
+      if(xp!==null){cursor.style.left=xp+'%';cursor.style.display='block';}
+    }
+    _sessions[chartId].raf=requestAnimationFrame(tick);
+  }
+  _sessions[chartId]={raf:requestAnimationFrame(tick),btn:btn};
+}
 </script>
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
 html,body{
   font-family:"Courier New",Courier,monospace;
-  font-size:13px;color:#000;min-height:100vh;
-  background-color:#faf7ee;
-  background-image:
-    linear-gradient(rgba(160,90,20,.22) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(160,90,20,.22) 1px,transparent 1px),
-    linear-gradient(rgba(160,90,20,.07) 1px,transparent 1px),
-    linear-gradient(90deg,rgba(160,90,20,.07) 1px,transparent 1px);
-  background-size:40px 40px,40px 40px,8px 8px,8px 8px;
+  font-size:13px;color:#f0f0f0;min-height:100vh;
+  background-color:#0d0d0d;
 }
 
 /* menubar */
 .menubar{
-  background:rgba(250,247,238,.96);
-  border-bottom:2px solid #000;
+  background:rgba(13,13,13,.97);
+  border-bottom:1px solid #333;
   padding:0 1rem;height:24px;
   display:flex;align-items:center;gap:.8rem;
   position:sticky;top:0;z-index:100;
@@ -515,15 +685,16 @@ html,body{
 /* search */
 .search-wrap{position:relative;flex:1;max-width:380px}
 .search-input{
-  width:100%;border:1px solid #000;padding:1px 6px;
-  font-family:inherit;font-size:11px;background:#fff;outline:none;
+  width:100%;border:1px solid #333;padding:1px 6px;
+  font-family:inherit;font-size:11px;background:#1a1a1a;color:#f0f0f0;outline:none;
 }
-.search-input:focus{outline:1px solid #000;outline-offset:1px}
-.search-input::placeholder{color:#888}
+.search-input:focus{outline:1px solid #C8FF47;outline-offset:1px}
+.search-input::placeholder{color:#555}
 #search-drop{
   display:none;position:absolute;top:100%;left:0;right:0;
-  background:rgba(250,247,238,.98);border:1px solid #000;border-top:none;
+  background:#111;border:1px solid #333;border-top:none;
   padding:.3rem .5rem;z-index:200;max-height:260px;overflow-y:auto;
+  color:#f0f0f0;
 }
 
 /* page */
@@ -533,31 +704,28 @@ html,body{
 .group{
   font-size:10px;font-weight:bold;text-transform:uppercase;
   letter-spacing:.1em;margin:1.2rem 0 .4rem;
-  border-bottom:1px solid #000;padding-bottom:1px;
+  border-bottom:1px solid #333;padding-bottom:1px;
+  color:#666;
 }
 
 /* mac window cards */
 .card{
-  background:rgba(255,255,255,.84);
-  border:2px solid #000;
-  box-shadow:3px 3px 0 #000;
+  background:#111;
+  border:1px solid #2a2a2a;
+  box-shadow:3px 3px 0 #C8FF4722;
   margin-bottom:1rem;
 }
 .card-head{
   background:repeating-linear-gradient(
-    180deg,#000 0px,#000 1px,#fff 1px,#fff 2px);
-  border-bottom:2px solid #000;
+    180deg,#222 0px,#222 1px,#111 1px,#111 2px);
+  border-bottom:1px solid #2a2a2a;
   padding:.22rem .7rem;
   display:flex;align-items:center;gap:.6rem;
 }
-.card-head::before{
-  content:"";display:inline-block;
-  width:10px;height:10px;border:1px solid #000;background:#fff;flex-shrink:0;
-}
-.card-title{font-size:11px;font-weight:bold;background:#fff;padding:0 .25rem}
+.card-title{font-size:11px;font-weight:bold;background:transparent;padding:0 .25rem;color:#e0e0e0}
 .badge{
   margin-left:auto;font-size:9px;font-weight:bold;
-  background:#000;color:#fff;padding:1px 4px;
+  background:#1a1a1a;color:#C8FF47;border:1px solid #C8FF4744;padding:1px 4px;
 }
 .card-body{padding:.7rem .9rem}
 
@@ -567,49 +735,47 @@ html,body{
 
 /* tables */
 table{border-collapse:collapse;width:100%}
-th,td{border:1px solid #000;padding:.25rem .5rem;text-align:left}
+th,td{border:1px solid #222;padding:.25rem .5rem;text-align:left;color:#e8e8e8}
 th{
-  background:#000;color:#fff;font-size:10px;
+  background:#1a1a1a;color:#C8FF47;font-size:10px;
   text-transform:uppercase;letter-spacing:.04em;
   cursor:pointer;user-select:none;
 }
-th:hover{background:#333}
-tr:nth-child(even) td{background:rgba(0,0,0,.04)}
+th:hover{background:#222;color:#fff}
+tr:nth-child(even) td{background:rgba(255,255,255,.03)}
 
 /* inputs */
 input[type=text]{
-  border:2px solid #000;padding:.25rem .5rem;
-  font-family:inherit;font-size:11px;background:#fff;outline:none;
+  border:1px solid #333;padding:.25rem .5rem;
+  font-family:inherit;font-size:11px;background:#1a1a1a;color:#f0f0f0;outline:none;
 }
-input[type=text]:focus{outline:2px solid #000;outline-offset:1px}
-input[type=text]::placeholder{color:#888}
+input[type=text]:focus{outline:1px solid #C8FF47;outline-offset:1px}
+input[type=text]::placeholder{color:#555}
 
 /* buttons */
 button{
-  border:2px solid #000;padding:.25rem .75rem;
+  border:1px solid #333;padding:.25rem .75rem;
   font-family:inherit;font-size:11px;font-weight:bold;
-  cursor:pointer;background:#fff;color:#000;
-  box-shadow:2px 2px 0 #000;position:relative;
+  cursor:pointer;background:#1a1a1a;color:#C8FF47;
+  box-shadow:2px 2px 0 #C8FF4733;position:relative;
 }
 button:active{box-shadow:none;top:2px;left:2px}
+button:hover{border-color:#C8FF47;color:#fff;}
 
 /* htmx */
 .htmx-indicator{display:none;font-size:10px;font-weight:bold}
 .htmx-request .htmx-indicator{display:inline}
 .htmx-request.htmx-indicator{display:inline}
 
-code{
-  font-family:inherit;font-size:11px;
-  background:rgba(0,0,0,.08);border:1px solid #000;padding:0 .25rem;
-}
+/* play button — overrides base button sizing */
+.play-btn{margin-left:.5rem;font-size:9px;padding:0 5px;box-shadow:1px 1px 0 #000}
 </style>
 </head>
 <body>
 
 <div class="menubar">
-  <span class="menubar-apple">&#x2318;</span>
   <div class="search-wrap">
-    <input class="search-input" id="search-input" type="text"
+    <input class="search-input" id="search-input" name="q" type="text"
            placeholder="search metrics &amp; processes..."
            hx-get="/search" hx-trigger="keyup changed delay:250ms"
            hx-target="#search-drop"
@@ -617,23 +783,28 @@ code{
            onblur="setTimeout(function(){document.getElementById('search-drop').style.display=''},200)">
     <div id="search-drop"></div>
   </div>
-  <span style="margin-left:auto"
-        hx-get="/metrics/sysinfo" hx-trigger="load, every 5s"
-        hx-target="this" hx-swap="innerHTML">
+  <span style="margin-left:auto;display:flex;align-items:center;gap:.5rem">
+    <label style="font-size:10px;font-weight:bold">BPM</label>
+    <input type="number" id="bpm-input" value="200" min="20" max="600"
+           style="width:52px;border:1px solid #333;padding:0 4px;font-family:inherit;
+                  font-size:11px;background:#1a1a1a;color:#C8FF47;outline:none;height:16px">
+    <span hx-get="/metrics/sysinfo" hx-trigger="load, every 5s"
+          hx-target="this" hx-swap="innerHTML"></span>
   </span>
 </div>
 
 <div class="page">
 
   <!-- CPU Score -->
-  <div class="group">CPU Score &mdash; sweep to hear history</div>
+  <div class="group">CPU</div>
   <div class="card">
     <div class="card-head">
       <span class="card-title">Per-Core Activity &mdash; 60s rolling</span>
+      <button onclick="playChart('cpu-chart',this)" class="play-btn">[ PLAY ]</button>
       <span class="badge">every 2s</span>
     </div>
     <div class="card-body">
-      <div hx-get="/metrics/cpu" hx-trigger="load, every 2s" hx-swap="innerHTML">
+      <div id="cpu-chart" hx-get="/metrics/cpu" hx-trigger="load, every 2s" hx-swap="innerHTML">
         <div style="height:270px"></div>
       </div>
     </div>
@@ -645,10 +816,11 @@ code{
     <div class="card">
       <div class="card-head">
         <span class="card-title">RAM &amp; Swap &mdash; 60s rolling</span>
+        <button onclick="playChart('mem-chart',this)" class="play-btn">[ PLAY ]</button>
         <span class="badge">every 2s</span>
       </div>
       <div class="card-body">
-        <div hx-get="/metrics/memory" hx-trigger="load, every 2s" hx-swap="innerHTML">
+        <div id="mem-chart" hx-get="/metrics/memory" hx-trigger="load, every 2s" hx-swap="innerHTML">
           <div style="height:150px"></div>
         </div>
       </div>
@@ -672,10 +844,11 @@ code{
     <div class="card">
       <div class="card-head">
         <span class="card-title">Network &mdash; TX / RX</span>
+        <button onclick="playChart('net-chart',this)" class="play-btn">[ PLAY ]</button>
         <span class="badge">every 2s</span>
       </div>
       <div class="card-body">
-        <div hx-get="/metrics/network" hx-trigger="load, every 2s" hx-swap="innerHTML">
+        <div id="net-chart" hx-get="/metrics/network" hx-trigger="load, every 2s" hx-swap="innerHTML">
           <div style="height:160px"></div>
         </div>
       </div>
@@ -683,10 +856,11 @@ code{
     <div class="card">
       <div class="card-head">
         <span class="card-title">Disk &mdash; Read / Write</span>
+        <button onclick="playChart('disk-chart',this)" class="play-btn">[ PLAY ]</button>
         <span class="badge">every 2s</span>
       </div>
       <div class="card-body">
-        <div hx-get="/metrics/disk" hx-trigger="load, every 2s" hx-swap="innerHTML">
+        <div id="disk-chart" hx-get="/metrics/disk" hx-trigger="load, every 2s" hx-swap="innerHTML">
           <div style="height:160px"></div>
         </div>
       </div>
