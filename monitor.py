@@ -649,9 +649,14 @@ function playChart(chartId,btn){
     var elapsed=ctx.currentTime-t0;
     var pct=elapsed/totalSec;
     if(pct>=1){
-      btn.textContent="[ PLAY ]";
-      if(cursor)cursor.style.display='none';
       delete _sessions[chartId];
+      if(cursor)cursor.style.display='none';
+      var loop=document.getElementById('loop-toggle');
+      if(loop&&loop.checked){
+        playChart(chartId,btn); // restart with fresh data
+      } else {
+        btn.textContent="[ PLAY ]";
+      }
       return;
     }
     if(cursor&&pct>=0){
@@ -788,6 +793,9 @@ button:hover{border-color:#C8FF47;color:#fff;}
     <input type="number" id="bpm-input" value="200" min="20" max="600"
            style="width:52px;border:1px solid #333;padding:0 4px;font-family:inherit;
                   font-size:11px;background:#1a1a1a;color:#C8FF47;outline:none;height:16px">
+    <label style="font-size:10px;font-weight:bold;display:flex;align-items:center;gap:3px;cursor:pointer">
+      <input type="checkbox" id="loop-toggle" style="accent-color:#C8FF47">LOOP
+    </label>
     <span hx-get="/metrics/sysinfo" hx-trigger="load, every 5s"
           hx-target="this" hx-swap="innerHTML"></span>
   </span>
