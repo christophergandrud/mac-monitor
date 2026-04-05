@@ -2,8 +2,6 @@
 
 A real-time macOS system monitor with audible charts. Built with htmx, plain Python (no framework), and the Web Audio API.
 
-![Spring palette line charts with playhead cursor]
-
 ## Features
 
 - **Live metrics** — CPU per-core, RAM, swap, network TX/RX, disk read/write, top processes
