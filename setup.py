@@ -38,14 +38,6 @@ OPTIONS = {
         "threading",
         "webview.platforms.cocoa",
     ],
-    "data_files": [
-        ("themes", ["themes/spring-dark.yaml",
-                    "themes/apple-iie.yaml",
-                    "themes/commodore-64.yaml",
-                    "themes/bbc-micro.yaml",
-                    "themes/amber-phosphor.yaml",
-                    "themes/paper.yaml"]),
-    ],
     "excludes": [
         "tkinter",
         "unittest",
@@ -69,9 +61,19 @@ OPTIONS = {
     },
 }
 
+DATA_FILES = [
+    ("themes", ["themes/spring-dark.yaml",
+                "themes/apple-iie.yaml",
+                "themes/commodore-64.yaml",
+                "themes/bbc-micro.yaml",
+                "themes/amber-phosphor.yaml",
+                "themes/paper.yaml"]),
+]
+
 setup(
     name="Mac Monitor",
     app=APP,
+    data_files=DATA_FILES,
     options={"py2app": OPTIONS},
     setup_requires=["py2app"],
 )
