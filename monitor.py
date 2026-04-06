@@ -48,10 +48,12 @@ _p_net = _p_disk = None
 _p_t   = time.time()
 _last_collect = 0.0
 
-# ── Claude context-fill history ───────────────────────────────────────────────
-# pid → deque of context_pct floats; updated each time /metrics/claude is polled
-_CTX_BUF = 40   # ~2 min at 3s poll interval
-_ctx_history: dict = {}  # pid → collections.deque
+# ── Claude per-instance rolling history ──────────────────────────────────────
+# Updated each time /metrics/claude is polled (every 3s → 40 samples ≈ 2 min)
+_CTX_BUF     = 40
+_ctx_history: dict = {}   # pid → deque[float]  context fill %
+_cpu_history: dict = {}   # pid → deque[float]  cpu %
+_mem_history: dict = {}   # pid → deque[float]  mem MB
 
 # ── data collection ───────────────────────────────────────────────────────────
 
@@ -687,30 +689,26 @@ def _uptime_str(s: int) -> str:
     return f"{s//3600}h {(s%3600)//60:02d}m"
 
 
-def _ctx_record(pid: int, pct: float) -> list:
-    """Append context pct to rolling buffer for pid; return the buffer as a list."""
-    if pid not in _ctx_history:
-        _ctx_history[pid] = collections.deque(maxlen=_CTX_BUF)
-    _ctx_history[pid].append(pct)
-    return list(_ctx_history[pid])
+def _hist_record(store: dict, pid: int, val: float) -> list:
+    if pid not in store:
+        store[pid] = collections.deque(maxlen=_CTX_BUF)
+    store[pid].append(val)
+    return list(store[pid])
 
 
-def _ctx_sparkline(vals: list) -> str:
-    """Tiny 100×20 SVG polyline of context-fill history."""
+def _sparkline_svg(vals: list, max_val: float, color: str,
+                   w: int = 160, h: int = 32) -> str:
+    """SVG polyline chart. max_val sets the Y scale (0..max_val maps to full height)."""
     if len(vals) < 2:
-        return ""
-    w, h = 100, 20
-    n = len(vals)
+        return f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" style="display:inline-block;vertical-align:middle;margin-left:6px;opacity:.7"><line x1="0" y1="{h//2}" x2="{w}" y2="{h//2}" stroke="var(--t-border)" stroke-width="1"/></svg>'
+    n   = len(vals)
+    top = max(max_val, max(vals)) or 1
     pts = " ".join(
-        f"{i/(n-1)*w:.1f},{h - v/100*h:.1f}"
-        for i, v in enumerate(vals)
+        f"{i/(n-1)*w:.1f},{h - vals[i]/top*h:.1f}"
+        for i in range(n)
     )
-    latest = vals[-1]
-    color = ("#c0392b" if latest >= 90
-             else ("var(--t-c1)" if latest >= 75
-                   else "var(--t-c0)"))
     return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
-            f'style="display:inline-block;vertical-align:middle;margin-left:5px;opacity:.85">'
+            f'style="display:inline-block;vertical-align:middle;margin-left:6px;opacity:.85">'
             f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.5" '
             f'stroke-linejoin="round" stroke-linecap="round"/>'
             f'</svg>')
@@ -746,16 +744,21 @@ def html_claude_instances() -> str:
                 flag_parts.append(f'<span class="{css}" title="{_esc(f.message)}">{_esc(f.kind)}</span>')
             flags_html = f'<div class="attention-flags">{"".join(flag_parts)}</div>'
 
-        # ── context bar + sparkline ───────────────────────────────────────────
+        # ── histories ─────────────────────────────────────────────────────────
+        pct      = inst.tokens.context_pct if inst.tokens else 0.0
+        ctx_hist = _hist_record(_ctx_history, inst.pid, pct)
+        cpu_hist = _hist_record(_cpu_history, inst.pid, inst.cpu)
+        mem_hist = _hist_record(_mem_history, inst.pid, inst.mem_mb)
+
+        # context fill bar + sparkline
         ctx_html = "—"
         if inst.tokens:
-            pct      = inst.tokens.context_pct
-            history  = _ctx_record(inst.pid, pct)
             fill_css = "ctx-fill crit" if pct >= 90 else ("ctx-fill warn" if pct >= 75 else "ctx-fill")
+            ctx_color = ("#c0392b" if pct >= 90 else ("var(--t-c1)" if pct >= 75 else "var(--t-c0)"))
             ctx_html = (f'<span>{pct:.0f}%</span>'
                         f'<span class="ctx-bar"><span class="{fill_css}" style="width:{min(pct,100):.0f}%"></span></span>'
                         f' {inst.tokens.context_used:,}&thinsp;/&thinsp;{inst.tokens.context_max:,} tok'
-                        f'{_ctx_sparkline(history)}')
+                        f'{_sparkline_svg(ctx_hist, 100, ctx_color)}')
 
         # ── cost ──────────────────────────────────────────────────────────────
         cost_html = "—"
@@ -802,6 +805,11 @@ def html_claude_instances() -> str:
         if model_short:       meta.append(model_short)
         meta_html = ' &middot; '.join(meta)
 
+        cpu_spark = _sparkline_svg(cpu_hist, max(100, max(cpu_hist) if cpu_hist else 100),
+                                    "var(--t-c1)")
+        mem_spark = _sparkline_svg(mem_hist, max(mem_hist) if mem_hist else 1,
+                                    "var(--t-c2)")
+
         parts.append(f'''<div class="claude-instance">
   <div class="claude-head">
     <strong style="font-size:12px">{_esc(inst.project_name)}</strong>
@@ -810,8 +818,10 @@ def html_claude_instances() -> str:
     {focus_btn}
   </div>
   <div class="claude-body">
-    <div class="claude-stat">pid <span>{inst.pid}</span> &middot; up <span>{_uptime_str(inst.uptime_s)}</span> &middot; cpu <span>{inst.cpu:.1f}%</span> &middot; mem <span>{inst.mem_mb:.0f}&thinsp;MB</span></div>
+    <div class="claude-stat">pid <span>{inst.pid}</span> &middot; up <span>{_uptime_str(inst.uptime_s)}</span></div>
     <div class="claude-stat">context: {ctx_html}</div>
+    <div class="claude-stat">cpu <span>{inst.cpu:.1f}%</span>{cpu_spark}</div>
+    <div class="claude-stat">mem <span>{inst.mem_mb:.0f}&thinsp;MB</span>{mem_spark}</div>
     <div class="claude-stat">tool: {tool_html}</div>
     <div class="claude-stat">cost: {cost_html}</div>
   </div>

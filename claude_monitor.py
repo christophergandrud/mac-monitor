@@ -101,29 +101,59 @@ class DailyStats:
     sessions_today:   int
 
 
+# ── CPU measurement cache ─────────────────────────────────────────────────────
+# psutil.cpu_percent(interval=None) returns 0 on first call per process —
+# it needs two calls separated by time to compute a delta.
+# We keep a persistent {pid: Process} cache and read cpu_percent at the start
+# of each find_instances() call so by the time we build the instance the
+# measurement covers the full interval between calls (~3 s in the web UI).
+
+_proc_cache: dict[int, "psutil.Process"] = {}
+_cpu_readings: dict[int, float]          = {}
+
+
 # ── public API ────────────────────────────────────────────────────────────────
 
 def find_instances() -> list[ClaudeInstance]:
-    """Return all running Claude Code instances with enriched metadata.
-
-    Claude Code's versioned binary is named after its version (e.g. '2.1.92')
-    so we match by exe path containing the claude data dir, or by cmdline == ['claude'].
-    """
+    """Return all running Claude Code instances with enriched metadata."""
     if not HAS_PSUTIL:
         return []
-    instances = []
+
+    # 1. Read cpu_percent for all previously-seen processes (real delta values).
+    for pid in list(_proc_cache):
+        try:
+            _cpu_readings[pid] = _proc_cache[pid].cpu_percent()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            del _proc_cache[pid]
+            _cpu_readings.pop(pid, None)
+
+    # 2. Discover current instances.
+    instances  = []
     seen_pids: set[int] = set()
     for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time',
                                       'cpu_percent', 'memory_info', 'status']):
         try:
             if not _is_claude_code(proc):
                 continue
-            if proc.pid in seen_pids:
+            pid = proc.pid
+            if pid in seen_pids:
                 continue
-            seen_pids.add(proc.pid)
-            instances.append(_build_instance(proc))
+            seen_pids.add(pid)
+            if pid not in _proc_cache:
+                # Prime the measurement — returns 0 now, real on next call.
+                _proc_cache[pid] = proc
+                proc.cpu_percent()
+                _cpu_readings[pid] = 0.0
+            instances.append(_build_instance(proc, cpu=_cpu_readings.get(pid, 0.0)))
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
+
+    # 3. Evict stale pids.
+    for pid in list(_proc_cache):
+        if pid not in seen_pids:
+            del _proc_cache[pid]
+            _cpu_readings.pop(pid, None)
+
     return instances
 
 
@@ -299,7 +329,7 @@ end tell'''
 
 # ── instance builder ──────────────────────────────────────────────────────────
 
-def _build_instance(proc) -> ClaudeInstance:
+def _build_instance(proc, cpu: float = 0.0) -> ClaudeInstance:
     try:
         cwd = proc.cwd()
     except Exception:
@@ -314,11 +344,6 @@ def _build_instance(proc) -> ClaudeInstance:
         uptime_s = int(time.time() - proc.create_time())
     except Exception:
         uptime_s = 0
-
-    try:
-        cpu = proc.cpu_percent()
-    except Exception:
-        cpu = 0.0
 
     terminal_app, terminal_tty = _detect_terminal(proc.pid)
     jsonl_path, session_dir    = _match_session(cwd)
