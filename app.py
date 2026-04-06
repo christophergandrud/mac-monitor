@@ -62,22 +62,28 @@ def _style_app_window(t: dict) -> bool:
     the WKWebView's CSS body background fills the titlebar area naturally.
     Returns True if at least one window was successfully styled.
     """
+    try:
+        app = NSApp.sharedApplication()
+        if app is None:
+            return False
+    except Exception:
+        return False
+
     styled = False
     candidates = []
     try:
-        candidates += list(NSApp.orderedWindows() or [])
+        candidates += list(app.orderedWindows() or [])
     except Exception:
         pass
     try:
-        for w in (NSApp.windows() or []):
+        for w in (app.windows() or []):
             if w not in candidates:
                 candidates.append(w)
     except Exception:
         pass
-    # Also try main/key window
-    for getter in (NSApp.mainWindow, NSApp.keyWindow):
+    for getter_name in ("mainWindow", "keyWindow"):
         try:
-            w = getter()
+            w = getattr(app, getter_name)()
             if w and w not in candidates:
                 candidates.insert(0, w)
         except Exception:
