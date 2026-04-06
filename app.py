@@ -55,16 +55,23 @@ def _hex_to_nscolor(hex_str: str):
 
 
 def _style_app_window(t: dict) -> None:
-    """Transparent titlebar with background matching the current theme."""
+    """Transparent titlebar + matching background on the main app window.
+
+    Filters by frame width (>400 px) instead of title, because pywebview
+    updates the window title to the HTML <title> tag after page load.
+    """
+    bg    = t.get("bg", "#1a1a1a")
+    color = _hex_to_nscolor(bg)
     try:
         for win in (NSApp.windows() or []):
-            title = win.title() or ""
-            if "Mac Monitor" in title or "localhost" in title:
-                bg = t.get("bg", "#1a1a1a")
+            try:
+                if win.frame().size.width < 400:
+                    continue
                 win.setTitlebarAppearsTransparent_(True)
                 win.setMovableByWindowBackground_(True)
-                win.setBackgroundColor_(_hex_to_nscolor(bg))
-                break
+                win.setBackgroundColor_(color)
+            except Exception:
+                pass
     except Exception:
         pass
 
@@ -77,7 +84,7 @@ def _effective_is_dark() -> bool:
             [NSAppearanceNameAqua, NSAppearanceNameDarkAqua])
         return best == NSAppearanceNameDarkAqua
     except Exception:
-        return _effective_is_dark()   # fallback to subprocess
+        return _theme.system_is_dark()   # fallback to subprocess
 
 
 def _apply_theme(t: dict) -> None:
@@ -231,6 +238,10 @@ class _MenuDelegate(NSObject):
     @objc.typedSelector(b"v@:@")
     def showMonitor_(self, sender):
         self._window.show()
+
+    @objc.typedSelector(b"v@:@")
+    def reapplyWindowStyle_(self, timer):
+        _style_app_window(monitor._T)
 
     @objc.typedSelector(b"v@:@")
     def focusInstance_(self, sender):
@@ -394,6 +405,12 @@ class _StatusBarSetup(NSObject):
         )
 
         _style_app_window(monitor._T)
+
+        # Re-apply after page load (pywebview may create the WKWebView window
+        # slightly after run_ fires; 1.5 s is enough for any local HTTP page)
+        NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
+            1.5, _delegate, "reapplyWindowStyle:", None, False
+        )
 
 
 def _setup_menu_bar(window):

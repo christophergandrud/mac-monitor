@@ -144,61 +144,86 @@ def _is_claude_code(proc) -> bool:
 
 
 def daily_stats() -> DailyStats:
-    """Aggregate today's cost from live JSONL files; session counts from stats-cache."""
+    """Aggregate today's cost from live JSONL files; 7-day activity from JSONL mtimes."""
     import datetime
 
-    # ── session counts from stats-cache ──────────────────────────────────────
+    today     = datetime.date.today()
+    today_str = today.isoformat()
+    day_starts = [
+        datetime.datetime.combine(today - datetime.timedelta(days=d),
+                                  datetime.time.min).timestamp()
+        for d in range(8)   # 8 boundaries for 7 day buckets
+    ]
+
+    # ── session counts from stats-cache (best effort, may be stale) ───────────
     sessions_today = 0
-    msg_week: list[int] = [0] * 7   # message counts by day (proxy for sparkline)
+    cache_week: list[int] = [0] * 7
     try:
         data = json.loads(_STATS.read_text())
-        daily_list = data.get("dailyActivity", [])   # list of {date, messageCount, sessionCount}
+        daily_list = data.get("dailyActivity", [])
         by_date = {entry["date"]: entry for entry in daily_list if "date" in entry}
-        today_str = _today_key()
         sessions_today = by_date.get(today_str, {}).get("sessionCount", 0)
         for delta in range(7):
-            d = (datetime.date.today() - datetime.timedelta(days=delta)).isoformat()
-            msg_week[delta] = by_date.get(d, {}).get("messageCount", 0)
+            d = (today - datetime.timedelta(days=delta)).isoformat()
+            cache_week[delta] = by_date.get(d, {}).get("messageCount", 0)
     except Exception:
         pass
 
-    # ── today's cost from JSONL files modified today ──────────────────────────
+    # ── scan JSONL files: cost today + 7-day session counts ──────────────────
     cost_today = 0.0
     in_today   = 0
     out_today  = 0
-    today_start = datetime.datetime.combine(
-        datetime.date.today(), datetime.time.min
-    ).timestamp()
+    jsonl_week = [0] * 7   # session file count per day (index 0=today)
+
     try:
         for jsonl in _PROJECTS.rglob("*.jsonl"):
             try:
-                if jsonl.stat().st_mtime < today_start:
-                    continue
                 if jsonl.parent.name == 'subagents':
                     continue
-                for e in _tail_jsonl(jsonl, n_kb=32):
-                    if e.get('type') != 'assistant':
-                        continue
-                    usage = e.get('message', {}).get('usage', {})
-                    if not usage:
-                        continue
-                    model = e.get('message', {}).get('model', 'default')
-                    p  = _price(model)
-                    i  = usage.get('input_tokens', 0)
-                    o  = usage.get('output_tokens', 0)
-                    cr = usage.get('cache_read_input_tokens', 0)
-                    cw = usage.get('cache_creation_input_tokens', 0)
-                    cost_today += (i*p["in"] + o*p["out"] + cr*p["cr"] + cw*p["cw"]) / 1_000_000
-                    in_today   += i
-                    out_today  += o
+                mtime = jsonl.stat().st_mtime
+
+                # Which day bucket? day_starts[0]=start of today, [1]=yesterday…
+                bucket = None
+                for delta in range(7):
+                    if mtime >= day_starts[delta]:
+                        bucket = delta
+                        break
+                if bucket is None:
+                    continue   # older than 7 days
+
+                jsonl_week[bucket] += 1
+
+                if bucket == 0:   # today's files — read for cost
+                    for e in _tail_jsonl(jsonl, n_kb=32):
+                        if e.get('type') != 'assistant':
+                            continue
+                        usage = e.get('message', {}).get('usage', {})
+                        if not usage:
+                            continue
+                        model = e.get('message', {}).get('model', 'default')
+                        p  = _price(model)
+                        i  = usage.get('input_tokens', 0)
+                        o  = usage.get('output_tokens', 0)
+                        cr = usage.get('cache_read_input_tokens', 0)
+                        cw = usage.get('cache_creation_input_tokens', 0)
+                        cost_today += (i*p["in"] + o*p["out"] + cr*p["cr"] + cw*p["cw"]) / 1_000_000
+                        in_today   += i
+                        out_today  += o
             except Exception:
                 pass
     except Exception:
         pass
 
+    # Prefer cache data if it looks fresh (non-zero for recent days), else use JSONL counts
+    cache_has_recent = any(cache_week[:3])
+    week = cache_week if cache_has_recent else jsonl_week
+
+    if sessions_today == 0:
+        sessions_today = jsonl_week[0]
+
     return DailyStats(
         cost_today=round(cost_today, 3),
-        cost_week=[float(m) for m in msg_week],   # message counts as activity proxy
+        cost_week=[float(v) for v in week],
         tokens_today_in=in_today,
         tokens_today_out=out_today,
         sessions_today=sessions_today,
