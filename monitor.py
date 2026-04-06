@@ -48,6 +48,11 @@ _p_net = _p_disk = None
 _p_t   = time.time()
 _last_collect = 0.0
 
+# ── Claude context-fill history ───────────────────────────────────────────────
+# pid → deque of context_pct floats; updated each time /metrics/claude is polled
+_CTX_BUF = 40   # ~2 min at 3s poll interval
+_ctx_history: dict = {}  # pid → collections.deque
+
 # ── data collection ───────────────────────────────────────────────────────────
 
 def maybe_collect():
@@ -682,6 +687,35 @@ def _uptime_str(s: int) -> str:
     return f"{s//3600}h {(s%3600)//60:02d}m"
 
 
+def _ctx_record(pid: int, pct: float) -> list:
+    """Append context pct to rolling buffer for pid; return the buffer as a list."""
+    if pid not in _ctx_history:
+        _ctx_history[pid] = collections.deque(maxlen=_CTX_BUF)
+    _ctx_history[pid].append(pct)
+    return list(_ctx_history[pid])
+
+
+def _ctx_sparkline(vals: list) -> str:
+    """Tiny 100×20 SVG polyline of context-fill history."""
+    if len(vals) < 2:
+        return ""
+    w, h = 100, 20
+    n = len(vals)
+    pts = " ".join(
+        f"{i/(n-1)*w:.1f},{h - v/100*h:.1f}"
+        for i, v in enumerate(vals)
+    )
+    latest = vals[-1]
+    color = ("#c0392b" if latest >= 90
+             else ("var(--t-c1)" if latest >= 75
+                   else "var(--t-c0)"))
+    return (f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
+            f'style="display:inline-block;vertical-align:middle;margin-left:5px;opacity:.85">'
+            f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="1.5" '
+            f'stroke-linejoin="round" stroke-linecap="round"/>'
+            f'</svg>')
+
+
 def html_claude_instances() -> str:
     if not HAS_CM:
         return '<div style="padding:1rem;color:var(--t-muted);font-size:11px">claude_monitor not available</div>'
@@ -712,14 +746,16 @@ def html_claude_instances() -> str:
                 flag_parts.append(f'<span class="{css}" title="{_esc(f.message)}">{_esc(f.kind)}</span>')
             flags_html = f'<div class="attention-flags">{"".join(flag_parts)}</div>'
 
-        # ── context bar ───────────────────────────────────────────────────────
+        # ── context bar + sparkline ───────────────────────────────────────────
         ctx_html = "—"
         if inst.tokens:
-            pct = inst.tokens.context_pct
+            pct      = inst.tokens.context_pct
+            history  = _ctx_record(inst.pid, pct)
             fill_css = "ctx-fill crit" if pct >= 90 else ("ctx-fill warn" if pct >= 75 else "ctx-fill")
             ctx_html = (f'<span>{pct:.0f}%</span>'
                         f'<span class="ctx-bar"><span class="{fill_css}" style="width:{min(pct,100):.0f}%"></span></span>'
-                        f' {inst.tokens.context_used:,}&thinsp;/&thinsp;{inst.tokens.context_max:,} tok')
+                        f' {inst.tokens.context_used:,}&thinsp;/&thinsp;{inst.tokens.context_max:,} tok'
+                        f'{_ctx_sparkline(history)}')
 
         # ── cost ──────────────────────────────────────────────────────────────
         cost_html = "—"
@@ -794,19 +830,24 @@ def html_daily_stats() -> str:
     except Exception:
         return '<div style="font-size:11px;color:var(--t-muted)">stats unavailable</div>'
 
-    # 7-day activity sparkline (message counts)
+    # 7-day message-count sparkline (proxy for activity; labeled clearly)
     _BLOCKS = "▁▂▃▄▅▆▇█"
-    max_w = max(ds.cost_week) if ds.cost_week and max(ds.cost_week) > 0 else 1
-    spark = ""
-    for v in reversed(ds.cost_week):
-        idx = min(int(v / max_w * 8), 7)
+    counts  = list(reversed(ds.cost_week))   # oldest → newest
+    max_w   = max(counts) if counts and max(counts) > 0 else 1
+    spark   = ""
+    for v in counts:
+        idx    = min(int(v / max_w * 8), 7)
         spark += f'<span style="color:var(--t-c0)">{_BLOCKS[idx]}</span>'
 
-    return (f'<div class="card"><div class="card-body" style="display:flex;gap:2rem;flex-wrap:wrap;align-items:center">'
-            f'<div class="claude-stat">cost today: <span>${ds.cost_today:.2f}</span></div>'
+    total_msgs = int(sum(ds.cost_week))
+
+    return (f'<div class="card"><div class="card-body" '
+            f'style="display:flex;gap:2rem;flex-wrap:wrap;align-items:center">'
+            f'<div class="claude-stat" style="font-size:13px">cost today&nbsp; <span style="font-size:15px">${ds.cost_today:.2f}</span></div>'
             f'<div class="claude-stat">sessions today: <span>{ds.sessions_today}</span></div>'
-            f'<div class="claude-stat">tokens in: <span>{ds.tokens_today_in:,}</span> &middot; out: <span>{ds.tokens_today_out:,}</span></div>'
-            f'<div class="claude-stat" style="margin-left:auto">7-day activity: {spark}</div>'
+            f'<div class="claude-stat" style="margin-left:auto;font-size:10px;color:var(--t-muted)">'
+            f'7-day messages ({total_msgs:,} total)&nbsp; {spark}'
+            f'</div>'
             f'</div></div>')
 
 
