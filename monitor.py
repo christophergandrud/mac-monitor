@@ -760,7 +760,7 @@ def html_claude_instances() -> str:
         # ── cost ──────────────────────────────────────────────────────────────
         cost_html = "—"
         if inst.tokens and inst.tokens.session_cost > 0:
-            cost_html = f'<span>${inst.tokens.session_cost:.3f}</span> session'
+            cost_html = f'<span>${inst.tokens.session_cost:.3f}</span> <span style="color:var(--t-muted);font-size:10px">API equiv.</span>'
 
         # ── current tool ─────────────────────────────────────────────────────
         tool_html = "—"
@@ -843,7 +843,7 @@ def html_daily_stats() -> str:
 
     return (f'<div class="card"><div class="card-body" '
             f'style="display:flex;gap:2rem;flex-wrap:wrap;align-items:center">'
-            f'<div class="claude-stat" style="font-size:13px">cost today&nbsp; <span style="font-size:15px">${ds.cost_today:.2f}</span></div>'
+            f'<div class="claude-stat" style="font-size:13px">API equiv. today&nbsp; <span style="font-size:15px">${ds.cost_today:.2f}</span></div>'
             f'<div class="claude-stat">sessions today: <span>{ds.sessions_today}</span></div>'
             f'<div class="claude-stat" style="margin-left:auto;font-size:10px;color:var(--t-muted)">'
             f'7-day messages ({total_msgs:,} total)&nbsp; {spark}'

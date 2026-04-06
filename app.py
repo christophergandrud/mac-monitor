@@ -18,7 +18,8 @@ from AppKit import (
     NSMenu, NSMenuItem, NSObject,
     NSApp, NSColor,
 )
-from Foundation import NSTimer, NSDistributedNotificationCenter
+from Foundation import (NSTimer, NSDistributedNotificationCenter,
+                        NSNotificationSuspensionBehaviorDeliverImmediately)
 import objc
 
 import monitor
@@ -66,6 +67,17 @@ def _style_app_window(t: dict) -> None:
                 break
     except Exception:
         pass
+
+
+def _effective_is_dark() -> bool:
+    """Check current system appearance via NSApp — always in sync with notifications."""
+    try:
+        from AppKit import NSAppearanceNameAqua, NSAppearanceNameDarkAqua
+        best = NSApp.effectiveAppearance().bestMatchFromAppearancesWithNames_(
+            [NSAppearanceNameAqua, NSAppearanceNameDarkAqua])
+        return best == NSAppearanceNameDarkAqua
+    except Exception:
+        return _effective_is_dark()   # fallback to subprocess
 
 
 def _apply_theme(t: dict) -> None:
@@ -116,7 +128,7 @@ class _MenuDelegate(NSObject):
                     claude = f"  ◉ {n} {ctx_spark}"
                     if attn:
                         claude += f" ⚠{attn}"
-                    claude += f" ${cost:.2f}"
+                    claude += f" ≈${cost:.2f}"
                     title += claude
                 else:
                     desktop = _cm.claude_desktop_process()
@@ -176,7 +188,7 @@ class _MenuDelegate(NSObject):
             else:
                 for inst in instances:
                     ctx  = f"   ctx {inst.tokens.context_pct:.0f}%" if inst.tokens else ""
-                    cost = f"   ${inst.tokens.session_cost:.3f}" if (inst.tokens and inst.tokens.session_cost) else ""
+                    cost = f"   ≈${inst.tokens.session_cost:.3f}" if (inst.tokens and inst.tokens.session_cost) else ""
                     attn = "   ⚠" if inst.attention else ""
                     app  = f"   → {inst.terminal_app}" if inst.terminal_app else ""
                     row_title = f"◉  {inst.project_name}{ctx}{cost}{attn}{app}"
@@ -194,7 +206,7 @@ class _MenuDelegate(NSObject):
                 # Daily stats row
                 try:
                     ds = _cm.daily_stats()
-                    daily = f"Today   ${ds.cost_today:.2f}   sessions {ds.sessions_today}"
+                    daily = f"Today   ≈${ds.cost_today:.2f} API equiv.   sessions {ds.sessions_today}"
                 except Exception:
                     daily = "Today   —"
                 daily_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
@@ -235,7 +247,7 @@ class _MenuDelegate(NSObject):
         t    = _theme.set_theme(slug)
         _apply_theme(t)
         s = _theme.load_settings()
-        if _theme.system_is_dark():
+        if _effective_is_dark():
             s["dark_theme"] = slug
         else:
             s["light_theme"] = slug
@@ -252,7 +264,7 @@ class _MenuDelegate(NSObject):
             self._follow_item.setState_(1 if on else 0)
         if on:
             s2   = _theme.load_settings()
-            slug = s2["dark_theme"] if _theme.system_is_dark() else s2["light_theme"]
+            slug = s2["dark_theme"] if _effective_is_dark() else s2["light_theme"]
             t    = _theme.set_theme(slug)
             _apply_theme(t)
             self._sync_theme_checkmarks(slug)
@@ -262,7 +274,7 @@ class _MenuDelegate(NSObject):
         s = _theme.load_settings()
         if not s.get("follow_system"):
             return
-        slug = s["dark_theme"] if _theme.system_is_dark() else s["light_theme"]
+        slug = s["dark_theme"] if _effective_is_dark() else s["light_theme"]
         t    = _theme.set_theme(slug)
         _apply_theme(t)
         self._sync_theme_checkmarks(slug)
@@ -373,11 +385,12 @@ class _StatusBarSetup(NSObject):
         )
 
         NSDistributedNotificationCenter.defaultCenter(
-        ).addObserver_selector_name_object_(
+        ).addObserver_selector_name_object_suspensionBehavior_(
             _delegate,
             "systemAppearanceChanged:",
             "AppleInterfaceThemeChangedNotification",
             None,
+            NSNotificationSuspensionBehaviorDeliverImmediately,
         )
 
         _style_app_window(monitor._T)
