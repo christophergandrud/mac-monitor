@@ -47,6 +47,7 @@ URL = f"http://127.0.0.1:{PORT}"
 _status_item        = None
 _claude_status_item = None
 _delegate           = None
+_claude_delegate    = None
 
 
 def _hex_to_nscolor(hex_str: str):
@@ -226,6 +227,7 @@ class _MenuDelegate(NSObject):
         self._dsk_item         = None
         self._theme_items      = []   # (NSMenuItem, slug) — for checkmark sync
         self._follow_item      = None
+        self._follow_item2     = None  # second copy in Claude menu
         return self
 
     # ── metrics ───────────────────────────────────────────────────────────────
@@ -308,6 +310,10 @@ class _MenuDelegate(NSObject):
     def _sync_theme_checkmarks(self, active_slug):
         for item, slug in self._theme_items:
             item.setState_(1 if slug == active_slug else 0)
+        # sync second follow-system toggle if it exists (Claude menu)
+        if self._follow_item2:
+            s = _theme.load_settings()
+            self._follow_item2.setState_(1 if s.get("follow_system") else 0)
 
 
 class _StatusBarSetup(NSObject):
@@ -322,7 +328,7 @@ class _StatusBarSetup(NSObject):
 
     @objc.typedSelector(b"v@:@")
     def run_(self, _):
-        global _status_item, _claude_status_item, _delegate
+        global _status_item, _claude_status_item, _delegate, _claude_delegate
 
         _delegate    = _MenuDelegate.alloc().initWithWindow_(self._window)
         bar          = NSStatusBar.systemStatusBar()
@@ -420,21 +426,52 @@ class _StatusBarSetup(NSObject):
 
         # ── Claude status item ─────────────────────────────────────────────────
         if HAS_CM:
-            self._claude_delegate = _ClaudeMenuDelegate.alloc().initWithWindow_(self._window)
+            _claude_delegate = _ClaudeMenuDelegate.alloc().initWithWindow_(self._window)
             _claude_status_item = bar.statusItemWithLength_(NSVariableStatusItemLength)
             _claude_status_item.setTitle_("◎")
             _claude_status_item.setHighlightMode_(True)
 
             claude_menu = NSMenu.alloc().init()
-            claude_menu.setDelegate_(self._claude_delegate)
+            claude_menu.setDelegate_(_claude_delegate)
 
-            # Separator placeholder (instances inserted above this on open)
+            # Separator placeholder — instances inserted above this by menuWillOpen_
             claude_menu.addItem_(NSMenuItem.separatorItem())
 
             show_claude = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 "Show Monitor", "showMonitor:", "")
-            show_claude.setTarget_(self._claude_delegate)
+            show_claude.setTarget_(_claude_delegate)
             claude_menu.addItem_(show_claude)
+
+            claude_menu.addItem_(NSMenuItem.separatorItem())
+
+            # Appearance submenu (same themes, shares _delegate actions)
+            c_appearance_menu = NSMenu.alloc().init()
+            for t in _theme.list_themes():
+                ti = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    t["name"], "selectTheme:", "")
+                ti.setTarget_(_delegate)
+                ti.setRepresentedObject_(t["slug"])
+                ti.setState_(1 if t["name"] == active_name else 0)
+                c_appearance_menu.addItem_(ti)
+                _delegate._theme_items.append((ti, t["slug"]))
+            c_appearance_menu.addItem_(NSMenuItem.separatorItem())
+            c_follow = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Follow System", "toggleFollowSystem:", "")
+            c_follow.setTarget_(_delegate)
+            c_follow.setState_(1 if s.get("follow_system") else 0)
+            c_appearance_menu.addItem_(c_follow)
+            # keep a second ref so _sync_theme_checkmarks can update it
+            _delegate._follow_item2 = c_follow
+
+            c_appearance_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Appearance", None, "")
+            c_appearance_item.setSubmenu_(c_appearance_menu)
+            c_settings_menu = NSMenu.alloc().initWithTitle_("Settings")
+            c_settings_menu.addItem_(c_appearance_item)
+            c_settings_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                "Settings", None, "")
+            c_settings_item.setSubmenu_(c_settings_menu)
+            claude_menu.addItem_(c_settings_item)
 
             claude_menu.addItem_(NSMenuItem.separatorItem())
 
@@ -445,7 +482,7 @@ class _StatusBarSetup(NSObject):
             _claude_status_item.setMenu_(claude_menu)
 
             NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-                3.0, self._claude_delegate, "updateClaudeTitle:", None, True
+                3.0, _claude_delegate, "updateClaudeTitle:", None, True
             )
 
         # Apply transparent titlebar so window chrome matches the theme bg
