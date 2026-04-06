@@ -760,10 +760,8 @@ def html_claude_instances() -> str:
                         f' {inst.tokens.context_used:,}&thinsp;/&thinsp;{inst.tokens.context_max:,} tok'
                         f'{_sparkline_svg(ctx_hist, 100, ctx_color)}')
 
-        # ── cost ──────────────────────────────────────────────────────────────
-        cost_html = "—"
-        if inst.tokens and inst.tokens.session_cost > 0:
-            cost_html = f'<span>${inst.tokens.session_cost:.3f}</span> <span style="color:var(--t-muted);font-size:10px">API equiv.</span>'
+        # session_cost is from the JSONL tail (partial) — omit from card,
+        # daily total in the stats card below is more accurate.
 
         # ── current tool ─────────────────────────────────────────────────────
         tool_html = "—"
@@ -805,8 +803,8 @@ def html_claude_instances() -> str:
         if model_short:       meta.append(model_short)
         meta_html = ' &middot; '.join(meta)
 
-        cpu_spark = _sparkline_svg(cpu_hist, max(100, max(cpu_hist) if cpu_hist else 100),
-                                    "var(--t-c1)")
+        cpu_peak  = max(cpu_hist) if cpu_hist else 1
+        cpu_spark = _sparkline_svg(cpu_hist, max(cpu_peak * 1.1, 1.0), "var(--t-c1)")
         mem_spark = _sparkline_svg(mem_hist, max(mem_hist) if mem_hist else 1,
                                     "var(--t-c2)")
 
@@ -823,7 +821,6 @@ def html_claude_instances() -> str:
     <div class="claude-stat">cpu <span>{inst.cpu:.1f}%</span>{cpu_spark}</div>
     <div class="claude-stat">mem <span>{inst.mem_mb:.0f}&thinsp;MB</span>{mem_spark}</div>
     <div class="claude-stat">tool: {tool_html}</div>
-    <div class="claude-stat">cost: {cost_html}</div>
   </div>
   {agents_html}
   {flags_html}
@@ -1098,15 +1095,19 @@ html,body{
   background-color:var(--t-bg);
 }
 
-/* menubar */
+/* menubar — extra top padding accommodates transparent macOS titlebar (28px) */
 .menubar{
   background:var(--t-bg);
   border-bottom:1px solid var(--t-border);
-  padding:0 1rem;height:24px;
+  padding:0 1rem;
+  padding-top:env(titlebar-area-height,28px);
+  height:calc(24px + env(titlebar-area-height,28px));
   display:flex;align-items:center;gap:.8rem;
   position:sticky;top:0;z-index:100;
+  -webkit-app-region:drag;
 }
 .menubar-apple{font-size:15px;font-weight:bold}
+.menubar input,.menubar button,.menubar label{-webkit-app-region:no-drag}
 
 /* (search styles now in .search-row block) */
 #search-drop{
@@ -1190,7 +1191,8 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 /* search row — own row below menubar */
 .search-row{
   background:var(--t-bg);border-bottom:1px solid var(--t-border);
-  padding:5px 1rem;position:sticky;top:24px;z-index:99;
+  padding:5px 1rem;position:sticky;
+  top:calc(24px + env(titlebar-area-height,28px));z-index:99;
 }
 .search-row-inner{position:relative;max-width:640px}
 .search-row .search-input{
@@ -1209,7 +1211,8 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 .tab-bar{
   display:flex;gap:0;padding:0 1rem;
   background:var(--t-bg);border-bottom:2px solid var(--t-border);
-  position:sticky;top:58px;z-index:98;
+  position:sticky;
+  top:calc(58px + env(titlebar-area-height,28px));z-index:98;
 }
 .tab-btn{
   border:1px solid transparent;border-bottom:none;padding:4px 14px;

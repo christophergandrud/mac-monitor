@@ -17,6 +17,7 @@ from AppKit import (
     NSStatusBar, NSVariableStatusItemLength,
     NSMenu, NSMenuItem, NSObject,
     NSApp, NSColor,
+    NSWindowStyleMaskFullSizeContentView,
 )
 from Foundation import (NSTimer, NSDistributedNotificationCenter,
                         NSNotificationSuspensionBehaviorDeliverImmediately)
@@ -54,26 +55,47 @@ def _hex_to_nscolor(hex_str: str):
     return NSColor.colorWithRed_green_blue_alpha_(r, g, b, 1.0)
 
 
-def _style_app_window(t: dict) -> None:
-    """Transparent titlebar + matching background on the main app window.
+def _style_app_window(t: dict) -> bool:
+    """Extend WKWebView under a transparent titlebar so CSS background shows through.
 
-    Filters by frame width (>400 px) instead of title, because pywebview
-    updates the window title to the HTML <title> tag after page load.
+    Uses NSWindowStyleMaskFullSizeContentView — no colour-matching needed;
+    the WKWebView's CSS body background fills the titlebar area naturally.
+    Returns True if at least one window was successfully styled.
     """
-    bg    = t.get("bg", "#1a1a1a")
-    color = _hex_to_nscolor(bg)
+    styled = False
+    candidates = []
     try:
-        for win in (NSApp.windows() or []):
-            try:
-                if win.frame().size.width < 400:
-                    continue
-                win.setTitlebarAppearsTransparent_(True)
-                win.setMovableByWindowBackground_(True)
-                win.setBackgroundColor_(color)
-            except Exception:
-                pass
+        candidates += list(NSApp.orderedWindows() or [])
     except Exception:
         pass
+    try:
+        for w in (NSApp.windows() or []):
+            if w not in candidates:
+                candidates.append(w)
+    except Exception:
+        pass
+    # Also try main/key window
+    for getter in (NSApp.mainWindow, NSApp.keyWindow):
+        try:
+            w = getter()
+            if w and w not in candidates:
+                candidates.insert(0, w)
+        except Exception:
+            pass
+
+    for win in candidates:
+        try:
+            frame = win.frame()
+            if frame.size.width < 400 or frame.size.height < 300:
+                continue
+            win.setTitlebarAppearsTransparent_(True)
+            win.setMovableByWindowBackground_(True)
+            mask = win.styleMask() | NSWindowStyleMaskFullSizeContentView
+            win.setStyleMask_(mask)
+            styled = True
+        except Exception:
+            pass
+    return styled
 
 
 def _effective_is_dark() -> bool:
@@ -241,7 +263,11 @@ class _MenuDelegate(NSObject):
 
     @objc.typedSelector(b"v@:@")
     def reapplyWindowStyle_(self, timer):
-        _style_app_window(monitor._T)
+        if _style_app_window(monitor._T) and timer:
+            try:
+                timer.invalidate()   # stop retrying once we've succeeded
+            except Exception:
+                pass
 
     @objc.typedSelector(b"v@:@")
     def focusInstance_(self, sender):
@@ -406,10 +432,10 @@ class _StatusBarSetup(NSObject):
 
         _style_app_window(monitor._T)
 
-        # Re-apply after page load (pywebview may create the WKWebView window
-        # slightly after run_ fires; 1.5 s is enough for any local HTTP page)
+        # Retry every 0.5s until _style_app_window succeeds — the WKWebView
+        # NSWindow may not exist yet when run_ fires; timer self-invalidates on success.
         NSTimer.scheduledTimerWithTimeInterval_target_selector_userInfo_repeats_(
-            1.5, _delegate, "reapplyWindowStyle:", None, False
+            0.5, _delegate, "reapplyWindowStyle:", None, True
         )
 
 

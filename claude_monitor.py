@@ -223,22 +223,11 @@ def daily_stats() -> DailyStats:
 
                 jsonl_week[bucket] += 1
 
-                if bucket == 0:   # today's files — read for cost
-                    for e in _tail_jsonl(jsonl, n_kb=32):
-                        if e.get('type') != 'assistant':
-                            continue
-                        usage = e.get('message', {}).get('usage', {})
-                        if not usage:
-                            continue
-                        model = e.get('message', {}).get('model', 'default')
-                        p  = _price(model)
-                        i  = usage.get('input_tokens', 0)
-                        o  = usage.get('output_tokens', 0)
-                        cr = usage.get('cache_read_input_tokens', 0)
-                        cw = usage.get('cache_creation_input_tokens', 0)
-                        cost_today += (i*p["in"] + o*p["out"] + cr*p["cr"] + cw*p["cw"]) / 1_000_000
-                        in_today   += i
-                        out_today  += o
+                if bucket == 0:   # today's files — stream full file for accurate cost
+                    c, i, o = _scan_jsonl_cost(jsonl)
+                    cost_today += c
+                    in_today   += i
+                    out_today  += o
             except Exception:
                 pass
     except Exception:
@@ -723,6 +712,43 @@ def _summarise_tool(name: str, inp: dict) -> str:
 def _content(entry: dict) -> list:
     c = entry.get('message', {}).get('content', [])
     return c if isinstance(c, list) else []
+
+
+def _scan_jsonl_cost(path: Path) -> tuple[float, int, int]:
+    """Stream an entire JSONL file summing cost for all assistant+usage entries.
+
+    Uses a byte-level pre-filter to skip lines that clearly aren't assistant
+    messages — fast even for 14 MB+ session files.
+    Returns (cost_usd, input_tokens, output_tokens).
+    """
+    cost = in_tok = out_tok = 0
+    try:
+        with open(path, 'rb') as f:
+            for raw in f:
+                # Quick pre-filter: skip lines without the assistant marker
+                if b'"assistant"' not in raw:
+                    continue
+                try:
+                    e = json.loads(raw)
+                    if e.get('type') != 'assistant':
+                        continue
+                    usage = e.get('message', {}).get('usage', {})
+                    if not usage:
+                        continue
+                    model = e.get('message', {}).get('model', 'default')
+                    p  = _price(model)
+                    i  = usage.get('input_tokens', 0)
+                    o  = usage.get('output_tokens', 0)
+                    cr = usage.get('cache_read_input_tokens', 0)
+                    cw = usage.get('cache_creation_input_tokens', 0)
+                    cost   += (i*p["in"] + o*p["out"] + cr*p["cr"] + cw*p["cw"]) / 1_000_000
+                    in_tok += i
+                    out_tok += o
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return cost, in_tok, out_tok
 
 
 def _price(model: str) -> dict:
