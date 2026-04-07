@@ -16,8 +16,9 @@ import webview
 from AppKit import (
     NSStatusBar, NSVariableStatusItemLength,
     NSMenu, NSMenuItem, NSObject,
-    NSApp, NSColor,
+    NSApp,
     NSWindowStyleMaskFullSizeContentView,
+    NSAppearanceNameDarkAqua, NSAppearanceNameAqua,
 )
 from Foundation import (NSTimer, NSDistributedNotificationCenter,
                         NSNotificationSuspensionBehaviorDeliverImmediately)
@@ -49,17 +50,9 @@ _status_item = None
 _delegate    = None
 
 
-def _hex_to_nscolor(hex_str: str):
-    h = hex_str.lstrip("#")
-    r, g, b = int(h[0:2], 16)/255, int(h[2:4], 16)/255, int(h[4:6], 16)/255
-    return NSColor.colorWithRed_green_blue_alpha_(r, g, b, 1.0)
-
-
 def _style_app_window(t: dict) -> bool:
     """Extend WKWebView under a transparent titlebar so CSS background shows through.
 
-    Uses NSWindowStyleMaskFullSizeContentView — no colour-matching needed;
-    the WKWebView's CSS body background fills the titlebar area naturally.
     Returns True if at least one window was successfully styled.
     """
     try:
@@ -107,7 +100,6 @@ def _style_app_window(t: dict) -> bool:
 def _effective_is_dark() -> bool:
     """Check current system appearance via NSApp — always in sync with notifications."""
     try:
-        from AppKit import NSAppearanceNameAqua, NSAppearanceNameDarkAqua
         best = NSApp.effectiveAppearance().bestMatchFromAppearancesWithNames_(
             [NSAppearanceNameAqua, NSAppearanceNameDarkAqua])
         return best == NSAppearanceNameDarkAqua
@@ -155,7 +147,7 @@ class _MenuDelegate(NSObject):
                 n = len(instances)
                 if n:
                     ctx_spark = "".join(
-                        _BLOCKS[min(int((inst.tokens.context_pct if inst.tokens else 0) / 100 * 8), 7)]
+                        _BLOCKS[min(int((inst.tokens.context_pct if inst.tokens else 0) / 100 * 7), 7)]
                         for inst in instances
                     )
                     attn  = sum(1 for inst in instances if inst.attention)

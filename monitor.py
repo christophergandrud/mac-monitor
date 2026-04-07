@@ -458,6 +458,29 @@ def html_search_results(q):
                     f'{p["pid"]:>6}&nbsp;&nbsp;{p["name"][:22]:<22}&nbsp;&nbsp;'
                     f'cpu&nbsp;{p["cpu"]:5.1f}%&nbsp;&nbsp;mem&nbsp;{p["mem"]:4.1f}%</div>')
 
+    # Claude tab results
+    claude_kws = {"claude", "context", "model", "agent", "token", "cost", "session"}
+    if any(q_low in kw or kw in q_low for kw in claude_kws) and HAS_CM:
+        try:
+            instances = _cm.find_instances()
+            if instances:
+                out += ('<div style="font-family:Courier,monospace;font-size:10px;font-weight:bold;'
+                        'padding:.25rem 0;border-bottom:1px solid var(--t-border);margin-top:.2rem">'
+                        'CLAUDE INSTANCES</div>')
+                for inst in instances:
+                    ctx = f"ctx {inst.tokens.context_pct:.0f}%" if inst.tokens else "—"
+                    cost = f"${inst.tokens.session_cost:.3f}" if (inst.tokens and inst.tokens.session_cost) else ""
+                    model = inst.tokens.model.split("-")[1] if (inst.tokens and inst.tokens.model and "-" in inst.tokens.model) else ""
+                    tool = inst.current_tool.name if inst.current_tool else "idle"
+                    out += (f'<div style="font-family:Courier,monospace;font-size:11px;padding:.1rem 0">'
+                            f'{inst.pid:>6}&nbsp;&nbsp;{inst.project_name[:18]:<18}&nbsp;&nbsp;'
+                            f'{ctx}&nbsp;&nbsp;{model}&nbsp;&nbsp;{tool}&nbsp;&nbsp;{cost}</div>')
+            ds = _cm.daily_stats()
+            out += (f'<div style="font-family:Courier,monospace;font-size:11px;padding:.1rem 0">'
+                    f'Today: ${ds.cost_today:.2f} API equiv. &middot; {ds.sessions_today} sessions</div>')
+        except Exception:
+            pass
+
     if not out:
         out = ('<div style="font-family:Courier,monospace;font-size:11px;padding:.2rem 0">'
                '-- no results --</div>')
@@ -548,7 +571,7 @@ def html_system_tab() -> str:
   <div class="card">
     <div class="card-head">
       <span class="card-title">Per-Core Activity &mdash; 60s rolling</span>
-      <button onclick="playChart('cpu-chart',this)" class="play-btn">[ PLAY ]</button>
+      <button onclick="playChart('cpu-chart',this)" class="play-btn" data-chart="cpu-chart">[ PLAY ]</button>
       <span class="badge">every 2s</span>
     </div>
     <div class="card-body">
@@ -564,7 +587,7 @@ def html_system_tab() -> str:
     <div class="card">
       <div class="card-head">
         <span class="card-title">RAM &amp; Swap &mdash; 60s rolling</span>
-        <button onclick="playChart('mem-chart',this)" class="play-btn">[ PLAY ]</button>
+        <button onclick="playChart('mem-chart',this)" class="play-btn" data-chart="mem-chart">[ PLAY ]</button>
         <span class="badge">every 2s</span>
       </div>
       <div class="card-body">
@@ -592,7 +615,7 @@ def html_system_tab() -> str:
     <div class="card">
       <div class="card-head">
         <span class="card-title">Network &mdash; TX / RX</span>
-        <button onclick="playChart('net-chart',this)" class="play-btn">[ PLAY ]</button>
+        <button onclick="playChart('net-chart',this)" class="play-btn" data-chart="net-chart">[ PLAY ]</button>
         <span class="badge">every 2s</span>
       </div>
       <div class="card-body">
@@ -604,7 +627,7 @@ def html_system_tab() -> str:
     <div class="card">
       <div class="card-head">
         <span class="card-title">Disk &mdash; Read / Write</span>
-        <button onclick="playChart('disk-chart',this)" class="play-btn">[ PLAY ]</button>
+        <button onclick="playChart('disk-chart',this)" class="play-btn" data-chart="disk-chart">[ PLAY ]</button>
         <span class="badge">every 2s</span>
       </div>
       <div class="card-body">
@@ -714,6 +737,65 @@ def _sparkline_svg(vals: list, max_val: float, color: str,
             f'</svg>')
 
 
+def _claude_chart(chart_id: str, vals: list, max_val: float, color: str,
+                  label: str, voice: int = 0,
+                  midi_lo: int = 56, midi_hi: int = 80,
+                  w: int = 280, h: int = 80) -> str:
+    """Interactive mini-chart for Claude tab with hover-to-beep and PLAY support."""
+    if len(vals) < 2:
+        return (f'<div class="claude-chart-wrap">'
+                f'<span class="claude-chart-label">{label}</span>'
+                f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
+                f'style="display:block;width:100%;height:auto">'
+                f'<line x1="0" y1="{h//2}" x2="{w}" y2="{h//2}" '
+                f'stroke="var(--t-border)" stroke-width="1"/></svg></div>')
+
+    pl, pr, pt, pb = 4, 4, 4, 4
+    iw = w - pl - pr; ih = h - pt - pb
+    n   = len(vals)
+    top = max(max_val, max(vals)) or 1
+
+    # polyline
+    pts_list = [(pl + int(i / (n-1) * iw),
+                 pt + ih - int(min(max(vals[i], 0), top) / top * ih))
+                for i in range(n)]
+    d = f"M{pts_list[0][0]},{pts_list[0][1]}" + "".join(
+        f" L{x},{y}" for x, y in pts_list[1:])
+
+    # hover rects
+    cw = max(1, iw // n)
+    hovers = ""
+    for i, v in enumerate(vals):
+        freq = _val_to_hz(v, top, midi_lo, midi_hi)
+        det  = _slope_cents(vals, i, top)
+        x    = pl + int(i / (n-1) * iw)
+        hovers += (f'<rect x="{x}" y="{pt}" width="{cw+1}" height="{ih}" '
+                   f'fill="transparent" style="cursor:crosshair" '
+                   f'onmouseover="window._htmxBeep&&window._htmxBeep({freq},{det},{voice})"/>')
+
+    # frequency data for PLAY
+    freqs_data = json.dumps([
+        [[_val_to_hz(vals[i], top, midi_lo, midi_hi),
+          _slope_cents(vals, i, top), voice]]
+        for i in range(n)
+    ])
+
+    svg = (f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
+           f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{iw}" data-w="{w}" '
+           f'style="display:block;width:100%;height:auto">'
+           f'<path d="{d}" fill="none" stroke="{color}" stroke-width="1.5" '
+           f'stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>'
+           f'{hovers}</svg>')
+
+    return (f'<div class="claude-chart-wrap">'
+            f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">'
+            f'<span class="claude-chart-label">{label}</span>'
+            f'<button onclick="playChart(\'{chart_id}\',this)" class="play-btn" data-chart="{chart_id}">[ PLAY ]</button>'
+            f'</div>'
+            f'<div id="{chart_id}" style="position:relative">{svg}</div>'
+            f'</div>')
+
+
 def html_claude_instances() -> str:
     if not HAS_CM:
         return '<div style="padding:1rem;color:var(--t-muted);font-size:11px">claude_monitor not available</div>'
@@ -750,15 +832,13 @@ def html_claude_instances() -> str:
         cpu_hist = _hist_record(_cpu_history, inst.pid, inst.cpu)
         mem_hist = _hist_record(_mem_history, inst.pid, inst.mem_mb)
 
-        # context fill bar + sparkline
+        # context fill bar
         ctx_html = "—"
         if inst.tokens:
             fill_css = "ctx-fill crit" if pct >= 90 else ("ctx-fill warn" if pct >= 75 else "ctx-fill")
-            ctx_color = ("#c0392b" if pct >= 90 else ("var(--t-c1)" if pct >= 75 else "var(--t-c0)"))
             ctx_html = (f'<span>{pct:.0f}%</span>'
                         f'<span class="ctx-bar"><span class="{fill_css}" style="width:{min(pct,100):.0f}%"></span></span>'
-                        f' {inst.tokens.context_used:,}&thinsp;/&thinsp;{inst.tokens.context_max:,} tok'
-                        f'{_sparkline_svg(ctx_hist, 100, ctx_color)}')
+                        f' {inst.tokens.context_used:,}&thinsp;/&thinsp;{inst.tokens.context_max:,} tok')
 
         # session_cost is from the JSONL tail (partial) — omit from card,
         # daily total in the stats card below is more accurate.
@@ -803,10 +883,20 @@ def html_claude_instances() -> str:
         if model_short:       meta.append(model_short)
         meta_html = ' &middot; '.join(meta)
 
+        # interactive charts with PLAY
+        pid = inst.pid
+        ctx_color = ("#c0392b" if pct >= 90 else ("var(--t-c1)" if pct >= 75 else "var(--t-c0)"))
         cpu_peak  = max(cpu_hist) if cpu_hist else 1
-        cpu_spark = _sparkline_svg(cpu_hist, max(cpu_peak * 1.1, 1.0), "var(--t-c1)")
-        mem_spark = _sparkline_svg(mem_hist, max(mem_hist) if mem_hist else 1,
-                                    "var(--t-c2)")
+        ctx_max = max(max(ctx_hist) * 1.3, 1) if ctx_hist else 1
+        ctx_chart = _claude_chart(f"cl-ctx-{pid}", ctx_hist, ctx_max, ctx_color,
+                                  f"context {pct:.0f}%", voice=0, midi_lo=52, midi_hi=76)
+        cpu_chart = _claude_chart(f"cl-cpu-{pid}", cpu_hist,
+                                  max(cpu_peak * 1.1, 1.0), "var(--t-c1)",
+                                  f"cpu {inst.cpu:.1f}%", voice=1, midi_lo=56, midi_hi=80)
+        mem_chart = _claude_chart(f"cl-mem-{pid}", mem_hist,
+                                  max(max(mem_hist) if mem_hist else 1, 1),
+                                  "var(--t-c2)",
+                                  f"mem {inst.mem_mb:.0f} MB", voice=2, midi_lo=60, midi_hi=84)
 
         parts.append(f'''<div class="claude-instance">
   <div class="claude-head">
@@ -818,9 +908,12 @@ def html_claude_instances() -> str:
   <div class="claude-body">
     <div class="claude-stat">pid <span>{inst.pid}</span> &middot; up <span>{_uptime_str(inst.uptime_s)}</span></div>
     <div class="claude-stat">context: {ctx_html}</div>
-    <div class="claude-stat">cpu <span>{inst.cpu:.1f}%</span>{cpu_spark}</div>
-    <div class="claude-stat">mem <span>{inst.mem_mb:.0f}&thinsp;MB</span>{mem_spark}</div>
     <div class="claude-stat">tool: {tool_html}</div>
+  </div>
+  <div class="claude-charts">
+    {ctx_chart}
+    {cpu_chart}
+    {mem_chart}
   </div>
   {agents_html}
   {flags_html}
@@ -1003,17 +1096,22 @@ function _cursorPct(chartId,pct){
 // Cursor uses requestAnimationFrame + audioCtx.currentTime as ground truth.
 var _sessions={};
 
+// Re-find the PLAY/STOP button for a chart — survives htmx innerHTML swaps.
+function _findBtn(chartId){
+  return document.querySelector('[data-chart="'+chartId+'"]');
+}
+
 function playChart(chartId,btn){
   var sess=_sessions[chartId];
-  // Toggle off if same button pressed again
+  // Toggle off if same chart pressed again
   if(sess){
     cancelAnimationFrame(sess.raf);
     var _now=_audio.getCtx().currentTime;
     (sess.oscs||[]).forEach(function(o){try{o.stop(_now);}catch(e){}});
-    sess.btn.textContent="[ PLAY ]";
+    var b=_findBtn(chartId);if(b)b.textContent="[ PLAY ]";
     var cc=_getCursor(chartId);if(cc)cc.style.display='none';
     delete _sessions[chartId];
-    if(sess.btn===btn)return;
+    return;
   }
   var el=document.getElementById(chartId);
   var svg=el&&el.querySelector('svg');
@@ -1031,31 +1129,40 @@ function playChart(chartId,btn){
   var sessionOscs=[];
   freqs.forEach(function(chord,i){_scheduleChord(chord,t0+i*stepSec,sessionOscs);});
 
-  var cursor=_getCursor(chartId);
-  btn.textContent="[ STOP ]";
+  _getCursor(chartId);
+  if(btn)btn.textContent="[ STOP ]";
 
   function tick(){
     var elapsed=ctx.currentTime-t0;
     var pct=elapsed/totalSec;
     if(pct>=1){
       delete _sessions[chartId];
-      if(cursor)cursor.style.display='none';
+      var cc=_getCursor(chartId);if(cc)cc.style.display='none';
       var loop=document.getElementById('loop-toggle');
       if(loop&&loop.checked){
-        playChart(chartId,btn); // restart with fresh data
+        playChart(chartId,_findBtn(chartId));
       } else {
-        btn.textContent="[ PLAY ]";
+        var b=_findBtn(chartId);if(b)b.textContent="[ PLAY ]";
       }
       return;
     }
+    // Re-lookup cursor each frame — htmx may have replaced the DOM
+    var cursor=_getCursor(chartId);
     if(cursor&&pct>=0){
       var xp=_cursorPct(chartId,pct);
       if(xp!==null){cursor.style.left=xp+'%';cursor.style.display='block';}
     }
     _sessions[chartId].raf=requestAnimationFrame(tick);
   }
-  _sessions[chartId]={raf:requestAnimationFrame(tick),btn:btn,oscs:sessionOscs};
+  _sessions[chartId]={raf:requestAnimationFrame(tick),chartId:chartId,oscs:sessionOscs};
 }
+
+// After htmx swaps, update PLAY buttons for any active sessions
+document.addEventListener('htmx:afterSwap',function(){
+  Object.keys(_sessions).forEach(function(id){
+    var b=_findBtn(id);if(b)b.textContent="[ STOP ]";
+  });
+});
 
 // ── Tab system ────────────────────────────────────────────────────────────────
 function switchTab(name,btn){
@@ -1070,6 +1177,21 @@ document.addEventListener('DOMContentLoaded',function(){
   if(btn)switchTab(tab,btn);
 });
 
+// Cmd+[ / Cmd+] to switch tabs
+var _tabNames=['system','claude'];
+document.addEventListener('keydown',function(e){
+  if(e.metaKey&&(e.key==='['||e.key===']')&&e.target.tagName!=='INPUT'){
+    e.preventDefault();
+    var cur=localStorage.getItem('mac-monitor-tab')||'system';
+    var idx=_tabNames.indexOf(cur);
+    if(idx<0)idx=0;
+    idx=e.key===']'?(idx+1)%_tabNames.length:(idx-1+_tabNames.length)%_tabNames.length;
+    var name=_tabNames[idx];
+    var btn=document.getElementById('tab-btn-'+name);
+    if(btn)switchTab(name,btn);
+  }
+});
+
 // Spacebar stops all active playback sessions
 document.addEventListener('keydown',function(e){
   if(e.code==='Space'&&e.target.tagName!=='INPUT'){
@@ -1079,7 +1201,7 @@ document.addEventListener('keydown',function(e){
       cancelAnimationFrame(sess.raf);
       var now=_audio.getCtx().currentTime;
       (sess.oscs||[]).forEach(function(o){try{o.stop(now);}catch(e){}});
-      sess.btn.textContent='[ PLAY ]';
+      var b=_findBtn(id);if(b)b.textContent='[ PLAY ]';
       var cc=_getCursor(id);if(cc)cc.style.display='none';
       delete _sessions[id];
     });
@@ -1268,6 +1390,14 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 .focus-btn:hover{color:var(--t-accent);border-color:var(--t-accent)}
 .sparkline-bar{display:inline-block;width:8px;background:var(--t-c0);margin-right:1px;vertical-align:bottom}
 .daily-row{display:flex;align-items:flex-end;gap:.2rem;margin-top:.3rem;height:24px}
+.claude-charts{
+  display:grid;grid-template-columns:1fr 1fr 1fr;gap:.5rem;
+  padding:.5rem .9rem;border-top:1px solid var(--t-border);
+}
+@media(max-width:800px){.claude-charts{grid-template-columns:1fr}}
+.claude-chart-wrap{min-width:0}
+.claude-chart-label{font-size:9px;font-weight:bold;text-transform:uppercase;
+  letter-spacing:.04em;color:var(--t-muted)}
 .agents-list{margin-top:.4rem;font-size:11px}
 .agent-row{padding:.15rem 0;border-bottom:1px solid var(--t-border);color:var(--t-muted)}
 .agent-row span{color:var(--t-fg)}

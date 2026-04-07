@@ -506,7 +506,7 @@ def _token_stats(entries: list[dict]) -> TokenStats | None:
         model        = model,
         context_used = latest_in,
         context_max  = ctx_max,
-        context_pct  = latest_in / ctx_max,
+        context_pct  = latest_in / ctx_max * 100,
         session_in   = total_in,
         session_out  = total_out,
         cache_read   = cache_read,
@@ -631,10 +631,10 @@ def _detect_attention(proc, entries, tokens, current_tool, tool_ts) -> list[Atte
                     pass
 
     # Context high
-    if tokens and tokens.context_pct > 0.80:
+    if tokens and tokens.context_pct > 80:
         flags.append(AttentionFlag(
             'context',
-            f'Context {tokens.context_pct*100:.0f}% full ({tokens.context_used//1000}K / {tokens.context_max//1000}K)',
+            f'Context {tokens.context_pct:.0f}% full ({tokens.context_used//1000}K / {tokens.context_max//1000}K)',
         ))
 
     return flags
