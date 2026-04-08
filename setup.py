@@ -23,6 +23,7 @@ OPTIONS = {
     "packages": [
         "webview",
         "psutil",
+        "yaml",
         "AppKit",
         "Foundation",
         "objc",

@@ -14,7 +14,20 @@ except ImportError:
     import json
     def _parse(text): return json.loads(text)
 
-_HERE     = pathlib.Path(__file__).parent / "themes"
+def _find_themes_dir() -> pathlib.Path:
+    """Locate the themes directory, handling py2app bundles where __file__ is inside a zip."""
+    candidate = pathlib.Path(__file__).parent / "themes"
+    if candidate.is_dir():
+        return candidate
+    # py2app: themes are in Contents/Resources/themes inside the .app bundle
+    import sys
+    if getattr(sys, "frozen", False):
+        resources = pathlib.Path(sys.executable).resolve().parent.parent / "Resources" / "themes"
+        if resources.is_dir():
+            return resources
+    return candidate  # fallback
+
+_HERE     = _find_themes_dir()
 _USER     = pathlib.Path.home() / ".mac-monitor" / "theme.yaml"
 _SETTINGS = pathlib.Path.home() / ".mac-monitor" / "settings.json"
 _DEFAULT  = "spring-dark.yaml"
