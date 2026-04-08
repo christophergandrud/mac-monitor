@@ -210,7 +210,7 @@ def _grid(pl, pr, pt, pb, w, h, ymax, pcts, fmt_fn):
         out += (f'<line x1="{pl}" y1="{y}" x2="{w-pr}" y2="{y}" '
                 f'stroke="var(--t-border)" stroke-width="0.5" stroke-dasharray="2,3"/>'
                 f'<text x="{pl-3}" y="{y+3}" font-size="7" text-anchor="end" '
-                f'fill="var(--t-muted)" font-family="Courier,monospace">{fmt_fn(yv)}</text>')
+                f'fill="var(--t-muted)" font-family="SF Mono,Menlo,Monaco,Courier New,monospace">{fmt_fn(yv)}</text>')
     return out
 
 
@@ -233,7 +233,7 @@ def _svg_line(buf, pl, pr, pt, pb, w, h, ymax, dash, label, color,
     da  = f'stroke-dasharray="{dash}"' if dash else ""
     lx, ly = pts[-1]
     tag = (f'<text x="{lx-2}" y="{max(ly-5, pt+10)}" text-anchor="end" '
-           f'font-size="8" fill="{color}" font-family="Courier,monospace">'
+           f'font-size="8" fill="{color}" font-family="SF Mono,Menlo,Monaco,Courier New,monospace">'
            f'{label}:{label_fn(vs)}</text>')
     return (f'<path d="{d}" fill="none" stroke="{color}" '
             f'stroke-width="1.2" {da} opacity="{opacity}"/>{tag}')
@@ -245,7 +245,7 @@ def _pts_to_path(pts):
 
 def _stamp(w, h):
     return (f'<text x="{w-8}" y="{h}" text-anchor="end" font-size="8" '
-            f'fill="var(--t-muted)" font-family="Courier,monospace">'
+            f'fill="var(--t-muted)" font-family="SF Mono,Menlo,Monaco,Courier New,monospace">'
             f'upd {time.strftime("%H:%M:%S")}</text>')
 
 
@@ -279,7 +279,7 @@ def svg_cpu_score(*, w=720, h=270):
                   f'stroke-width="{sw}" {da} opacity="0.72"/>')
         lx, ly = pts[-1]
         lines += (f'<text x="{lx+3}" y="{min(ly+3, h-pb-2)}" font-size="7" '
-                  f'fill="{color}" font-family="Courier,monospace">C{ci}</text>')
+                  f'fill="{color}" font-family="SF Mono,Menlo,Monaco,Courier New,monospace">C{ci}</text>')
 
     # Each time step = [avg-voice0, max-core-voice1, min-core-voice2] played as a chord
     freqs_data = json.dumps([
@@ -364,10 +364,10 @@ def html_gauges():
             f'<div style="margin:.5rem 0">'
             f'<div style="display:flex;justify-content:space-between;font-weight:bold">'
             f'<span>{label}</span><span>{pct:.1f}%</span></div>'
-            f'<div style="background:var(--t-panel);border:1px solid var(--t-border);height:10px;'
-            f'overflow:hidden;cursor:crosshair" '
+            f'<div style="background:var(--t-panel);border:0.5px solid var(--t-border);height:8px;'
+            f'border-radius:2px;overflow:hidden;cursor:crosshair" '
             f'onmouseover="window._htmxBeep&&window._htmxBeep({freq})">'
-            f'<div style="background:var(--t-c0);width:{pct:.1f}%;height:100%"></div>'
+            f'<div style="background:var(--t-c0);width:{pct:.1f}%;height:100%;border-radius:2px"></div>'
             f'</div></div>'
         )
     rows += (f'<p style="font-size:9px;margin-top:.5rem">'
@@ -387,7 +387,7 @@ def html_sysinfo():
         ("",      time.strftime("%H:%M:%S")),
     ]
     return "".join(
-        f'<span style="margin-right:1rem;font-family:Courier,monospace;font-size:11px">'
+        f'<span style="margin-right:1rem;font-family:SF Mono,Menlo,monospace;font-size:11px">'
         f'{"<b>"+k+"</b>&nbsp;" if k else ""}{v}</span>'
         for k, v in pairs
     )
@@ -397,7 +397,7 @@ def html_proc_rows(q="", sort="cpu"):
     procs = get_procs(q, sort)
     if not procs:
         return ("<tr><td colspan='5' "
-                "style='text-align:center;font-family:Courier,monospace;font-size:11px'>"
+                "style='text-align:center;font-family:SF Mono,Menlo,monospace;font-size:11px'>"
                 "-- NO MATCH --</td></tr>")
     rows = ""
     for p in procs:
@@ -407,9 +407,9 @@ def html_proc_rows(q="", sort="cpu"):
             f'<td>{p["pid"]}</td>'
             f'<td>{p["name"][:32]}</td>'
             f'<td><div style="display:flex;align-items:center;gap:.3rem">'
-            f'<div style="background:var(--t-panel);border:1px solid var(--t-border);'
-            f'width:48px;height:6px;flex-shrink:0">'
-            f'<div style="background:var(--t-c1);width:{bw}%;height:100%"></div></div>'
+            f'<div style="background:var(--t-panel);border:0.5px solid var(--t-border);'
+            f'width:48px;height:5px;flex-shrink:0;border-radius:2px">'
+            f'<div style="background:var(--t-c1);width:{bw}%;height:100%;border-radius:2px"></div></div>'
             f'{p["cpu"]:.1f}%</div></td>'
             f'<td>{p["mem"]:.1f}%</td>'
             f'<td>{p["status"]}</td>'
@@ -444,17 +444,17 @@ def html_search_results(q):
     for kw, (label, val) in KEYWORDS.items():
         if (q_low in kw or kw in q_low) and label not in seen:
             seen.add(label)
-            out += (f'<div style="border-bottom:1px solid #ddd;padding:.2rem 0;'
-                    f'font-family:Courier,monospace;font-size:11px">'
+            out += (f'<div style="border-bottom:0.5px solid var(--t-border);padding:.2rem 0;'
+                    f'font-family:SF Mono,Menlo,monospace;font-size:11px">'
                     f'<b>{label}</b> &mdash; {val}</div>')
 
     procs = get_procs(q)[:6]
     if procs:
-        out += ('<div style="font-family:Courier,monospace;font-size:10px;font-weight:bold;'
-                'padding:.25rem 0;border-bottom:1px solid #000;margin-top:.2rem">'
+        out += ('<div style="font-family:SF Mono,Menlo,monospace;font-size:10px;font-weight:600;'
+                'padding:.25rem 0;border-bottom:0.5px solid var(--t-border);margin-top:.2rem">'
                 'PROCESSES</div>')
         for p in procs:
-            out += (f'<div style="font-family:Courier,monospace;font-size:11px;padding:.1rem 0">'
+            out += (f'<div style="font-family:SF Mono,Menlo,monospace;font-size:11px;padding:.1rem 0">'
                     f'{p["pid"]:>6}&nbsp;&nbsp;{p["name"][:22]:<22}&nbsp;&nbsp;'
                     f'cpu&nbsp;{p["cpu"]:5.1f}%&nbsp;&nbsp;mem&nbsp;{p["mem"]:4.1f}%</div>')
 
@@ -464,25 +464,25 @@ def html_search_results(q):
         try:
             instances = _cm.find_instances()
             if instances:
-                out += ('<div style="font-family:Courier,monospace;font-size:10px;font-weight:bold;'
-                        'padding:.25rem 0;border-bottom:1px solid var(--t-border);margin-top:.2rem">'
+                out += ('<div style="font-family:SF Mono,Menlo,monospace;font-size:10px;font-weight:600;'
+                        'padding:.25rem 0;border-bottom:0.5px solid var(--t-border);margin-top:.2rem">'
                         'CLAUDE INSTANCES</div>')
                 for inst in instances:
                     ctx = f"ctx {inst.tokens.context_pct:.0f}%" if inst.tokens else "—"
                     cost = f"${inst.tokens.session_cost:.3f}" if (inst.tokens and inst.tokens.session_cost) else ""
                     model = inst.tokens.model.split("-")[1] if (inst.tokens and inst.tokens.model and "-" in inst.tokens.model) else ""
                     tool = inst.current_tool.name if inst.current_tool else "idle"
-                    out += (f'<div style="font-family:Courier,monospace;font-size:11px;padding:.1rem 0">'
+                    out += (f'<div style="font-family:SF Mono,Menlo,monospace;font-size:11px;padding:.1rem 0">'
                             f'{inst.pid:>6}&nbsp;&nbsp;{inst.project_name[:18]:<18}&nbsp;&nbsp;'
                             f'{ctx}&nbsp;&nbsp;{model}&nbsp;&nbsp;{tool}&nbsp;&nbsp;{cost}</div>')
             ds = _cm.daily_stats()
-            out += (f'<div style="font-family:Courier,monospace;font-size:11px;padding:.1rem 0">'
+            out += (f'<div style="font-family:SF Mono,Menlo,monospace;font-size:11px;padding:.1rem 0">'
                     f'Today: ${ds.cost_today:.2f} API equiv. &middot; {ds.sessions_today} sessions</div>')
         except Exception:
             pass
 
     if not out:
-        out = ('<div style="font-family:Courier,monospace;font-size:11px;padding:.2rem 0">'
+        out = ('<div style="font-family:SF Mono,Menlo,monospace;font-size:11px;padding:.2rem 0">'
                '-- no results --</div>')
     return out
 
@@ -1212,15 +1212,18 @@ document.addEventListener('keydown',function(e){
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
 html,body{
-  font-family:"Courier New",Courier,monospace;
+  font-family:"SF Mono","Menlo","Monaco","Courier New",monospace;
   font-size:13px;color:var(--t-fg);min-height:100vh;
   background-color:var(--t-bg);
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale;
+  text-rendering:optimizeLegibility;
 }
 
 /* menubar — extra top padding accommodates transparent macOS titlebar (28px) */
 .menubar{
   background:var(--t-bg);
-  border-bottom:1px solid var(--t-border);
+  border-bottom:0.5px solid var(--t-border);
   padding:0 1rem;
   padding-top:env(titlebar-area-height,28px);
   height:calc(24px + env(titlebar-area-height,28px));
@@ -1234,40 +1237,43 @@ html,body{
 /* (search styles now in .search-row block) */
 #search-drop{
   display:none;position:absolute;top:100%;left:0;right:0;
-  background:var(--t-panel2);border:1px solid var(--t-border);border-top:none;
-  padding:.3rem .5rem;z-index:200;max-height:260px;overflow-y:auto;
-  color:var(--t-fg);
+  background:var(--t-panel2);border:0.5px solid var(--t-border);border-top:none;
+  padding:.4rem .6rem;z-index:200;max-height:260px;overflow-y:auto;
+  color:var(--t-fg);border-radius:0 0 3px 3px;
 }
 
 
 /* section labels */
 .group{
-  font-size:10px;font-weight:bold;text-transform:uppercase;
-  letter-spacing:.1em;margin:1.2rem 0 .4rem;
-  border-bottom:1px solid var(--t-border);padding-bottom:1px;
+  font-size:10px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.12em;margin:1.2rem 0 .4rem;
+  border-bottom:0.5px solid var(--t-border);padding-bottom:2px;
   color:var(--t-muted);
 }
 
 /* mac window cards */
 .card{
   background:var(--t-panel2);
-  border:1px solid var(--t-border);
-  box-shadow:3px 3px 0 var(--t-c0-22);
+  border:0.5px solid var(--t-border);
+  box-shadow:2px 2px 0 var(--t-c0-22);
   margin-bottom:1rem;
+  border-radius:3px;
 }
 .card-head{
   background:repeating-linear-gradient(
     180deg,var(--t-stripe) 0px,var(--t-stripe) 1px,var(--t-panel2) 1px,var(--t-panel2) 2px);
-  border-bottom:1px solid var(--t-border);
-  padding:.22rem .7rem;
+  border-bottom:0.5px solid var(--t-border);
+  padding:.25rem .75rem;
   display:flex;align-items:center;gap:.6rem;
+  border-radius:3px 3px 0 0;
 }
-.card-title{font-size:11px;font-weight:bold;background:transparent;padding:0 .25rem;color:var(--t-fg)}
+.card-title{font-size:11px;font-weight:600;background:transparent;padding:0 .25rem;color:var(--t-fg)}
 .badge{
-  margin-left:auto;font-size:9px;font-weight:bold;
-  background:var(--t-panel);color:var(--t-accent);border:1px solid var(--t-c0-44);padding:1px 4px;
+  margin-left:auto;font-size:9px;font-weight:600;
+  background:var(--t-panel);color:var(--t-accent);border:0.5px solid var(--t-c0-44);padding:1px 5px;
+  border-radius:2px;
 }
-.card-body{padding:.7rem .9rem}
+.card-body{padding:.75rem 1rem}
 
 /* layout */
 .grid-2{display:grid;grid-template-columns:1fr 1fr;gap:1rem}
@@ -1275,31 +1281,33 @@ html,body{
 
 /* tables */
 table{border-collapse:collapse;width:100%}
-th,td{border:1px solid var(--t-border);padding:.25rem .5rem;text-align:left;color:var(--t-fg)}
+th,td{border:0.5px solid var(--t-border);padding:.3rem .5rem;text-align:left;color:var(--t-fg)}
 th{
   background:var(--t-panel);color:var(--t-accent);font-size:10px;
-  text-transform:uppercase;letter-spacing:.04em;
+  text-transform:uppercase;letter-spacing:.05em;font-weight:600;
   cursor:pointer;user-select:none;
 }
 th:hover{background:var(--t-stripe);color:var(--t-fg)}
-tr:nth-child(even) td{background:rgba(128,128,128,.05)}
+tr:nth-child(even) td{background:rgba(128,128,128,.04)}
 
 /* inputs */
 input[type=text]{
-  border:1px solid var(--t-border);padding:.25rem .5rem;
+  border:0.5px solid var(--t-border);padding:.25rem .5rem;
   font-family:inherit;font-size:11px;background:var(--t-panel);color:var(--t-fg);outline:none;
+  border-radius:2px;
 }
 input[type=text]:focus{outline:1px solid var(--t-accent);outline-offset:1px}
 input[type=text]::placeholder{color:var(--t-muted)}
 
 /* buttons */
 button{
-  border:1px solid var(--t-border);padding:.25rem .75rem;
-  font-family:inherit;font-size:11px;font-weight:bold;
+  border:0.5px solid var(--t-border);padding:.25rem .75rem;
+  font-family:inherit;font-size:11px;font-weight:600;
   cursor:pointer;background:var(--t-panel);color:var(--t-accent);
-  box-shadow:2px 2px 0 var(--t-c0-33);position:relative;
+  box-shadow:1.5px 1.5px 0 var(--t-c0-33);position:relative;
+  border-radius:2px;
 }
-button:active{box-shadow:none;top:2px;left:2px}
+button:active{box-shadow:none;top:1.5px;left:1.5px}
 button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 
 /* htmx */
@@ -1308,44 +1316,47 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 .htmx-request.htmx-indicator{display:inline}
 
 /* play button — overrides base button sizing */
-.play-btn{margin-left:.5rem;font-size:9px;padding:0 5px;box-shadow:1px 1px 0 #000}
+.play-btn{margin-left:.5rem;font-size:9px;padding:0 5px;box-shadow:1px 1px 0 var(--t-c0-22)}
 
 /* search row — own row below menubar */
 .search-row{
-  background:var(--t-bg);border-bottom:1px solid var(--t-border);
+  background:var(--t-bg);border-bottom:0.5px solid var(--t-border);
   padding:5px 1rem;position:sticky;
   top:calc(24px + env(titlebar-area-height,28px));z-index:99;
 }
 .search-row-inner{position:relative;max-width:640px}
 .search-row .search-input{
-  width:100%;border:1px solid var(--t-accent);padding:3px 8px;
+  width:100%;border:0.5px solid var(--t-accent);padding:4px 8px;
   font-family:inherit;font-size:12px;background:var(--t-panel);color:var(--t-fg);outline:none;
+  border-radius:3px;
 }
-.search-row .search-input:focus{outline:2px solid var(--t-accent);outline-offset:1px}
+.search-row .search-input:focus{outline:1.5px solid var(--t-accent);outline-offset:1px}
 .search-row .search-input::placeholder{color:var(--t-muted);font-weight:normal}
 .search-row #search-drop{
   display:none;position:absolute;top:100%;left:0;right:0;
-  background:var(--t-panel2);border:1px solid var(--t-border);border-top:none;
-  padding:.3rem .5rem;z-index:200;max-height:260px;overflow-y:auto;color:var(--t-fg);
+  background:var(--t-panel2);border:0.5px solid var(--t-border);border-top:none;
+  padding:.4rem .6rem;z-index:200;max-height:260px;overflow-y:auto;color:var(--t-fg);
+  border-radius:0 0 3px 3px;
 }
 
 /* tab bar */
 .tab-bar{
   display:flex;gap:0;padding:0 1rem;
-  background:var(--t-bg);border-bottom:2px solid var(--t-border);
+  background:var(--t-bg);border-bottom:1.5px solid var(--t-border);
   position:sticky;
   top:calc(58px + env(titlebar-area-height,28px));z-index:98;
 }
 .tab-btn{
-  border:1px solid transparent;border-bottom:none;padding:4px 14px;
-  font-size:10px;font-weight:bold;letter-spacing:.06em;text-transform:uppercase;
+  border:0.5px solid transparent;border-bottom:none;padding:5px 16px;
+  font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;
   cursor:pointer;background:transparent;color:var(--t-muted);
-  box-shadow:none;position:relative;bottom:-2px;
+  box-shadow:none;position:relative;bottom:-1.5px;
+  border-radius:3px 3px 0 0;
 }
 .tab-btn:hover{color:var(--t-fg);border-color:var(--t-border)}
 .tab-btn.active{
   background:var(--t-bg);color:var(--t-accent);
-  border-color:var(--t-accent);border-bottom:2px solid var(--t-bg);
+  border-color:var(--t-accent);border-bottom:1.5px solid var(--t-bg);
 }
 
 /* tab content */
@@ -1353,53 +1364,56 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 
 /* claude tab */
 .claude-instance{
-  background:var(--t-panel2);border:1px solid var(--t-border);
-  margin-bottom:1rem;
+  background:var(--t-panel2);border:0.5px solid var(--t-border);
+  margin-bottom:1rem;border-radius:3px;
 }
 .claude-head{
   background:repeating-linear-gradient(
     180deg,var(--t-stripe) 0px,var(--t-stripe) 1px,var(--t-panel2) 1px,var(--t-panel2) 2px);
-  border-bottom:1px solid var(--t-border);padding:.3rem .7rem;
+  border-bottom:0.5px solid var(--t-border);padding:.3rem .75rem;
   display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;
+  border-radius:3px 3px 0 0;
 }
-.claude-body{padding:.6rem .9rem;display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem}
+.claude-body{padding:.6rem 1rem;display:grid;grid-template-columns:1fr 1fr;gap:.5rem 1.5rem}
 @media(max-width:680px){.claude-body{grid-template-columns:1fr}}
 .claude-stat{font-size:11px}
-.claude-stat span{color:var(--t-accent);font-weight:bold}
+.claude-stat span{color:var(--t-accent);font-weight:600}
 .ctx-bar{
-  display:inline-block;height:6px;background:var(--t-border);
+  display:inline-block;height:5px;background:var(--t-border);
   width:80px;vertical-align:middle;margin-left:4px;position:relative;
+  border-radius:2px;
 }
 .ctx-fill{
   display:block;height:100%;background:var(--t-c0);
-  transition:width .3s;
+  transition:width .3s;border-radius:2px;
 }
 .ctx-fill.warn{background:var(--t-c1)}
 .ctx-fill.crit{background:#c0392b}
 .attention-flags{display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.5rem}
 .attention-flag{
-  font-size:9px;font-weight:bold;padding:1px 5px;
-  border:1px solid var(--t-accent);color:var(--t-accent);text-transform:uppercase;
+  font-size:9px;font-weight:600;padding:1px 5px;
+  border:0.5px solid var(--t-accent);color:var(--t-accent);text-transform:uppercase;
+  border-radius:2px;
 }
 .attention-flag.critical{border-color:#c0392b;color:#c0392b}
 .focus-btn{
-  font-size:9px;padding:1px 6px;border:1px solid var(--t-border);
+  font-size:9px;padding:1px 6px;border:0.5px solid var(--t-border);
   background:var(--t-panel);color:var(--t-muted);cursor:pointer;
-  font-family:inherit;font-weight:bold;box-shadow:none;
+  font-family:inherit;font-weight:600;box-shadow:none;border-radius:2px;
 }
 .focus-btn:hover{color:var(--t-accent);border-color:var(--t-accent)}
 .sparkline-bar{display:inline-block;width:8px;background:var(--t-c0);margin-right:1px;vertical-align:bottom}
 .daily-row{display:flex;align-items:flex-end;gap:.2rem;margin-top:.3rem;height:24px}
 .claude-charts{
   display:grid;grid-template-columns:1fr 1fr 1fr;gap:.5rem;
-  padding:.5rem .9rem;border-top:1px solid var(--t-border);
+  padding:.5rem 1rem;border-top:0.5px solid var(--t-border);
 }
 @media(max-width:800px){.claude-charts{grid-template-columns:1fr}}
 .claude-chart-wrap{min-width:0}
-.claude-chart-label{font-size:9px;font-weight:bold;text-transform:uppercase;
-  letter-spacing:.04em;color:var(--t-muted)}
+.claude-chart-label{font-size:9px;font-weight:600;text-transform:uppercase;
+  letter-spacing:.05em;color:var(--t-muted)}
 .agents-list{margin-top:.4rem;font-size:11px}
-.agent-row{padding:.15rem 0;border-bottom:1px solid var(--t-border);color:var(--t-muted)}
+.agent-row{padding:.15rem 0;border-bottom:0.5px solid var(--t-border);color:var(--t-muted)}
 .agent-row span{color:var(--t-fg)}
 
 </style>
