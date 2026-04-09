@@ -16,6 +16,8 @@ Quick start
 
 from setuptools import setup
 
+VERSION = open("VERSION").read().strip()
+
 APP     = ["app.py"]
 OPTIONS = {
     "iconfile": "icon.icns",
@@ -52,8 +54,8 @@ OPTIONS = {
         "CFBundleName": "Mac Monitor",
         "CFBundleDisplayName": "Mac Monitor",
         "CFBundleIdentifier": "com.macmonitor.app",
-        "CFBundleVersion": "1.0.0",
-        "CFBundleShortVersionString": "1.0",
+        "CFBundleVersion": VERSION,
+        "CFBundleShortVersionString": VERSION,
         # Allow http://localhost without TLS in WKWebView.
         "NSAppTransportSecurity": {
             "NSAllowsLocalNetworking": True,
@@ -73,6 +75,7 @@ DATA_FILES = [
 
 setup(
     name="Mac Monitor",
+    version=VERSION,
     app=APP,
     data_files=DATA_FILES,
     options={"py2app": OPTIONS},
