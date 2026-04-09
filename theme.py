@@ -126,12 +126,29 @@ def load() -> dict:
     return _resolve(raw)
 
 
+def _is_dark_theme(raw: dict) -> bool:
+    """Determine if a theme is dark based on its background luminance."""
+    bg = raw.get("background", "#000000")
+    r, g, b = _hex_to_rgb(bg)
+    _, l, _ = colorsys.rgb_to_hls(r, g, b)
+    return l < 0.5
+
+
 def list_themes() -> list[dict]:
-    """Return all built-in themes as list of {slug, name} dicts, sorted by name."""
+    """Return all built-in themes as list of {slug, name, dark} dicts.
+
+    Sorted by group (dark first, then light), then by name within each group.
+    """
     themes = []
     for f in sorted(_HERE.glob("*.yaml")):
         raw = _parse(f.read_text())
-        themes.append({"slug": f.stem, "name": raw.get("name", f.stem)})
+        themes.append({
+            "slug": f.stem,
+            "name": raw.get("name", f.stem),
+            "dark": _is_dark_theme(raw),
+        })
+    # Dark themes first, then light; alphabetical within each group
+    themes.sort(key=lambda t: (not t["dark"], t["name"]))
     return themes
 
 

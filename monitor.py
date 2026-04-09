@@ -941,6 +941,18 @@ def html_daily_stats() -> str:
 
     total_msgs = int(sum(ds.cost_week))
 
+    # Warn about unknown models with approximate pricing
+    unknown_warn = ""
+    if HAS_CM:
+        unknown = _cm.get_unknown_models()
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            unknown_warn = (
+                f'<div style="font-size:9px;color:var(--t-c1);margin-top:.4rem">'
+                f'&#9888; Unknown model pricing (using default): {names} '
+                f'&mdash; update ~/.mac-monitor/pricing.yaml</div>'
+            )
+
     return (f'<div class="card"><div class="card-body" '
             f'style="display:flex;gap:2rem;flex-wrap:wrap;align-items:center">'
             f'<div class="claude-stat" style="font-size:13px">API equiv. today&nbsp; <span style="font-size:15px">${ds.cost_today:.2f}</span></div>'
@@ -948,6 +960,7 @@ def html_daily_stats() -> str:
             f'<div class="claude-stat" style="margin-left:auto;font-size:10px;color:var(--t-muted)">'
             f'7-day messages ({total_msgs:,} total)&nbsp; {spark}'
             f'</div>'
+            f'{unknown_warn}'
             f'</div></div>')
 
 

@@ -1,0 +1,95 @@
+# Claude API pricing — USD per million tokens.
+# Updated: 2026-04-09  Source: https://docs.anthropic.com/en/docs/about-claude/pricing
+#
+# To override, copy this file to ~/.mac-monitor/pricing.yaml and edit.
+# Unknown models fall back to the "default" entry and show a warning in the UI.
+#
+# Cache pricing multipliers (relative to base input):
+#   cache_read  = 0.1x base input   (cache hit)
+#   cache_write_5m  = 1.25x base input  (5-minute TTL)
+#   cache_write_1h  = 2x base input     (1-hour TTL)
+
+models:
+  # ── Opus family ──────────────────────────────────────────────
+  claude-opus-4-6:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    context_window: 1000000
+
+  claude-opus-4-5:
+    input: 5.00
+    output: 25.00
+    cache_read: 0.50
+    cache_write_5m: 6.25
+    cache_write_1h: 10.00
+    context_window: 200000
+
+  claude-opus-4-1:
+    input: 15.00
+    output: 75.00
+    cache_read: 1.50
+    cache_write_5m: 18.75
+    cache_write_1h: 30.00
+    context_window: 200000
+
+  claude-opus-4-20250514:
+    input: 15.00
+    output: 75.00
+    cache_read: 1.50
+    cache_write_5m: 18.75
+    cache_write_1h: 30.00
+    context_window: 200000
+
+  # ── Sonnet family ────────────────────────────────────────────
+  claude-sonnet-4-6:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    context_window: 1000000
+
+  claude-sonnet-4-5:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    context_window: 200000
+
+  claude-sonnet-4-20250514:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    context_window: 200000
+
+  # ── Haiku family ─────────────────────────────────────────────
+  claude-haiku-4-5-20251001:
+    input: 1.00
+    output: 5.00
+    cache_read: 0.10
+    cache_write_5m: 1.25
+    cache_write_1h: 2.00
+    context_window: 200000
+
+  claude-haiku-3-5:
+    input: 0.80
+    output: 4.00
+    cache_read: 0.08
+    cache_write_5m: 1.00
+    cache_write_1h: 1.60
+    context_window: 200000
+
+  # ── Fallback for unknown models ──────────────────────────────
+  default:
+    input: 3.00
+    output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
+    context_window: 200000

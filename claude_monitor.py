@@ -22,20 +22,98 @@ except ImportError:
     HAS_PSUTIL = False
 
 # ── pricing + context windows ─────────────────────────────────────────────────
+# Loaded from pricing.yaml (bundled) with ~/.mac-monitor/pricing.yaml override.
+# Unknown models fall back to "default" and are logged to _unknown_models.
 
-CONTEXT_WINDOWS: dict[str, int] = {
-    "claude-opus-4-6":        200_000,
-    "claude-sonnet-4-6":      200_000,
-    "claude-haiku-4-5-20251001": 200_000,
-    "default":                200_000,
-}
+import re
 
-PRICING: dict[str, dict] = {   # USD per million tokens
-    "claude-opus-4-6":        {"in": 15.00, "out": 75.00, "cr": 1.50,  "cw": 18.75},
-    "claude-sonnet-4-6":      {"in":  3.00, "out": 15.00, "cr": 0.30,  "cw":  3.75},
-    "claude-haiku-4-5-20251001": {"in": 0.80, "out":  4.00, "cr": 0.08, "cw":  1.00},
-    "default":                {"in":  3.00, "out": 15.00, "cr": 0.30,  "cw":  3.75},
-}
+_SETTINGS_FILE  = Path.home() / ".claude" / "settings.json"
+_USER_PRICING   = Path.home() / ".mac-monitor" / "pricing.yaml"
+
+def _find_pricing_yaml() -> Path:
+    """Locate the bundled pricing.yaml, handling py2app bundles."""
+    candidate = Path(__file__).parent / "pricing.yaml"
+    if candidate.is_file():
+        return candidate
+    import sys
+    if getattr(sys, "frozen", False):
+        resources = Path(sys.executable).resolve().parent.parent / "Resources" / "pricing.yaml"
+        if resources.is_file():
+            return resources
+    return candidate
+
+def _load_pricing() -> dict[str, dict]:
+    """Load pricing: user override → bundled file → hardcoded fallback."""
+    try:
+        import yaml
+        _parse = yaml.safe_load
+    except ImportError:
+        _parse = json.loads
+
+    raw = None
+    for src in (_USER_PRICING, _find_pricing_yaml()):
+        try:
+            if src.is_file():
+                raw = _parse(src.read_text())
+                break
+        except Exception:
+            continue
+
+    if not raw or "models" not in raw:
+        # Hardcoded fallback — Sonnet-class pricing
+        return {"default": {"in": 3.0, "out": 15.0, "cr": 0.30, "cw5": 3.75, "cw1h": 6.0, "ctx": 200_000}}
+
+    pricing = {}
+    for model_id, p in raw["models"].items():
+        pricing[model_id] = {
+            "in":   p.get("input", 3.0),
+            "out":  p.get("output", 15.0),
+            "cr":   p.get("cache_read", 0.30),
+            "cw5":  p.get("cache_write_5m", p.get("input", 3.0) * 1.25),
+            "cw1h": p.get("cache_write_1h", p.get("input", 3.0) * 2.0),
+            "ctx":  p.get("context_window", 200_000),
+        }
+    return pricing
+
+PRICING: dict[str, dict] = _load_pricing()
+
+# Track models we've seen but couldn't match — surfaced in the UI
+_unknown_models: set[str] = set()
+
+def _price(model: str) -> dict:
+    """Look up pricing for a model string.  Tries exact match, then substring."""
+    if model in PRICING:
+        return PRICING[model]
+    for key in PRICING:
+        if key != "default" and key in model:
+            return PRICING[key]
+    _unknown_models.add(model)
+    return PRICING.get("default", {"in": 3.0, "out": 15.0, "cr": 0.30, "cw5": 3.75, "cw1h": 6.0, "ctx": 200_000})
+
+def _context_max_for_model(model: str) -> int:
+    """Determine context window size.
+
+    Priority:
+      1. [Nm]/[Nk] suffix in ~/.claude/settings.json  (e.g. "opus[1m]" → 1M)
+      2. context_window from pricing.yaml for the model
+      3. 200K default
+    """
+    try:
+        settings = json.loads(_SETTINGS_FILE.read_text())
+        model_setting = settings.get("model", "")
+        m = re.search(r'\[(\d+)(m|k)\]', model_setting, re.IGNORECASE)
+        if m:
+            n = int(m.group(1))
+            unit = m.group(2).lower()
+            return n * 1_000_000 if unit == 'm' else n * 1_000
+    except Exception:
+        pass
+    p = _price(model)
+    return p.get("ctx", 200_000)
+
+def get_unknown_models() -> set[str]:
+    """Return model IDs seen in sessions but not in pricing.yaml."""
+    return set(_unknown_models)
 
 _PROJECTS = Path.home() / ".claude" / "projects"
 _STATS    = Path.home() / ".claude" / "stats-cache.json"
@@ -470,7 +548,8 @@ def _recent_tools(entries: list[dict], n: int = 5) -> list[ToolCall]:
 
 def _token_stats(entries: list[dict]) -> TokenStats | None:
     """Sum usage fields from all assistant messages."""
-    total_in = total_out = cache_read = cache_write = 0
+    total_in = total_out = cache_read = 0
+    cw_5m = cw_1h = 0  # separate cache write tiers
     latest_in = 0
     model = 'default'
 
@@ -489,7 +568,14 @@ def _token_stats(entries: list[dict]) -> TokenStats | None:
         total_in  += i
         total_out += o
         cache_read  += cr
-        cache_write += cw
+        # Break cache writes into 5m and 1h tiers if available
+        cc = usage.get('cache_creation', {})
+        if cc:
+            cw_5m += cc.get('ephemeral_5m_input_tokens', 0)
+            cw_1h += cc.get('ephemeral_1h_input_tokens', 0)
+        else:
+            # Fallback: treat all cache writes as 5m tier
+            cw_5m += cw
         # Real context fill = all tokens sent: uncached + cache-read + cache-created
         latest_in   = i + cr + cw
 
@@ -497,9 +583,10 @@ def _token_stats(entries: list[dict]) -> TokenStats | None:
         return None
 
     p           = _price(model)
-    ctx_max     = CONTEXT_WINDOWS.get(model, CONTEXT_WINDOWS['default'])
-    cost        = (total_in*p["in"] + total_out*p["out"] +
-                   cache_read*p["cr"] + cache_write*p["cw"]) / 1_000_000
+    ctx_max     = _context_max_for_model(model)
+    cost        = (total_in * p["in"] + total_out * p["out"] +
+                   cache_read * p["cr"] +
+                   cw_5m * p["cw5"] + cw_1h * p["cw1h"]) / 1_000_000
     savings     = cache_read * (p["in"] - p["cr"]) / 1_000_000
 
     return TokenStats(
@@ -741,7 +828,14 @@ def _scan_jsonl_cost(path: Path) -> tuple[float, int, int]:
                     o  = usage.get('output_tokens', 0)
                     cr = usage.get('cache_read_input_tokens', 0)
                     cw = usage.get('cache_creation_input_tokens', 0)
-                    cost   += (i*p["in"] + o*p["out"] + cr*p["cr"] + cw*p["cw"]) / 1_000_000
+                    cc = usage.get('cache_creation', {})
+                    if cc:
+                        c5 = cc.get('ephemeral_5m_input_tokens', 0)
+                        c1 = cc.get('ephemeral_1h_input_tokens', 0)
+                    else:
+                        c5, c1 = cw, 0
+                    cost   += (i*p["in"] + o*p["out"] + cr*p["cr"] +
+                               c5*p["cw5"] + c1*p["cw1h"]) / 1_000_000
                     in_tok += i
                     out_tok += o
                 except Exception:
@@ -750,12 +844,6 @@ def _scan_jsonl_cost(path: Path) -> tuple[float, int, int]:
         pass
     return cost, in_tok, out_tok
 
-
-def _price(model: str) -> dict:
-    for key in PRICING:
-        if key in model:
-            return PRICING[key]
-    return PRICING['default']
 
 
 def _today_key() -> str:

@@ -70,7 +70,9 @@ DATA_FILES = [
                 "themes/commodore-64.yaml",
                 "themes/bbc-micro.yaml",
                 "themes/amber-phosphor.yaml",
+                "themes/macintosh.yaml",
                 "themes/paper.yaml"]),
+    ("", ["pricing.yaml"]),
 ]
 
 setup(

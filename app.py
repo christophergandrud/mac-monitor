@@ -376,7 +376,17 @@ class _StatusBarSetup(NSObject):
         active_name = monitor._T["name"]
         s           = _theme.load_settings()
 
+        current_group = None
         for t in _theme.list_themes():
+            group = "Dark" if t["dark"] else "Light"
+            if group != current_group:
+                if current_group is not None:
+                    appearance_menu.addItem_(NSMenuItem.separatorItem())
+                header = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+                    f"— {group} —", None, "")
+                header.setEnabled_(False)
+                appearance_menu.addItem_(header)
+                current_group = group
             ti = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
                 t["name"], "selectTheme:", "")
             ti.setTarget_(_delegate)
