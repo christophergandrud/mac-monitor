@@ -5,6 +5,7 @@ import collections, time, os, platform, socket, random, json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
+import charts
 import theme as _theme
 _T  = _theme.load()   # active theme dict — reloaded on /theme poll
 
@@ -100,21 +101,6 @@ def maybe_collect():
     _p_t = now
 
 
-def _val_to_hz(v, ymax, midi_lo=52, midi_hi=84):
-    """Map value → Hz via MIDI scale (perceptually equal semitone steps)."""
-    ratio = min(max(v, 0), ymax) / max(ymax, 0.001)
-    midi  = midi_lo + ratio * (midi_hi - midi_lo)
-    return int(round(440 * 2 ** ((midi - 69) / 12)))
-
-
-def _slope_cents(vs, i, ymax):
-    """Proportional slope → detune cents, clamped to ±80."""
-    if i == 0:
-        return 0
-    raw = (vs[i] - vs[i - 1]) / max(ymax, 0.001) * 400
-    return int(max(-80, min(80, raw)))
-
-
 def fmt_bytes(b):
     b = max(0, b)
     if b < 1024:  return f"{b:.0f}B/s"
@@ -173,179 +159,85 @@ def get_procs(q="", sort="cpu"):
     return sorted(rows, key=fn, reverse=rev)[:30]
 
 
-# ── SVG helpers ───────────────────────────────────────────────────────────────
-
-def _make_pts(buf, pl, pr, pt, pb, w, h, ymax):
-    vs = list(buf); n = len(vs)
-    iw = w - pl - pr; ih = h - pt - pb
-    return [(pl + int(i / (n - 1) * iw),
-             pt + ih - int(min(max(vs[i], 0), ymax) / ymax * ih))
-            for i in range(n)]
-
-
-def _hover_rects(buf, pl, pr, pt, pb, w, h, ymax, voice=0, midi_lo=52, midi_hi=84,
-                 voice_fn=None):
-    """voice_fn(i) overrides the fixed voice per column (used by CPU chart)."""
-    vs = list(buf); n = len(vs)
-    iw = w - pl - pr; ih = h - pt - pb
-    cw = max(1, iw // n)
-    out = ""
-    for i, v in enumerate(vs):
-        freq = _val_to_hz(v, ymax, midi_lo, midi_hi)
-        det  = _slope_cents(vs, i, ymax)
-        vi   = voice_fn(i) if voice_fn else voice
-        x    = pl + int(i / (n - 1) * iw)
-        out += (f'<rect x="{x}" y="{pt}" width="{cw+1}" height="{ih}" '
-                f'fill="transparent" style="cursor:crosshair" '
-                f'onmouseover="window._htmxBeep&&window._htmxBeep({freq},{det},{vi})"/>')
-    return out
-
-
-def _grid(pl, pr, pt, pb, w, h, ymax, pcts, fmt_fn):
-    ih  = h - pt - pb
-    out = ""
-    for pct in pcts:
-        y  = pt + ih - int(pct / 100 * ih)
-        yv = ymax * pct / 100
-        out += (f'<line x1="{pl}" y1="{y}" x2="{w-pr}" y2="{y}" '
-                f'stroke="var(--t-border)" stroke-width="0.5" stroke-dasharray="2,3"/>'
-                f'<text x="{pl-3}" y="{y+3}" font-size="7" text-anchor="end" '
-                f'fill="var(--t-muted)" font-family="SF Mono,Menlo,Monaco,Courier New,monospace">{fmt_fn(yv)}</text>')
-    return out
-
-
-def _axes(pl, pr, pt, pb, w, h):
-    ih = h - pt - pb
-    return (f'<line x1="{pl}" y1="{pt}" x2="{pl}" y2="{pt+ih}" '
-            f'stroke="var(--t-border)" stroke-width="1.5"/>'
-            f'<line x1="{pl}" y1="{pt+ih}" x2="{w-pr}" y2="{pt+ih}" '
-            f'stroke="var(--t-border)" stroke-width="1.5"/>')
-
-
-def _svg_line(buf, pl, pr, pt, pb, w, h, ymax, dash, label, color,
-              opacity=0.82, label_fn=None):
-    """Render one polyline with an end-label. label_fn(vs) formats the current value."""
-    if label_fn is None:
-        label_fn = lambda vs: fmt_bytes(vs[-1])
-    pts = _make_pts(buf, pl, pr, pt, pb, w, h, ymax)
-    vs  = list(buf)
-    d   = _pts_to_path(pts)
-    da  = f'stroke-dasharray="{dash}"' if dash else ""
-    lx, ly = pts[-1]
-    tag = (f'<text x="{lx-2}" y="{max(ly-5, pt+10)}" text-anchor="end" '
-           f'font-size="8" fill="{color}" font-family="SF Mono,Menlo,Monaco,Courier New,monospace">'
-           f'{label}:{label_fn(vs)}</text>')
-    return (f'<path d="{d}" fill="none" stroke="{color}" '
-            f'stroke-width="1.2" {da} opacity="{opacity}"/>{tag}')
-
-
-def _pts_to_path(pts):
-    return f"M{pts[0][0]},{pts[0][1]}" + "".join(f" L{x},{y}" for x, y in pts[1:])
-
-
-def _stamp(w, h):
-    return (f'<text x="{w-8}" y="{h}" text-anchor="end" font-size="8" '
-            f'fill="var(--t-muted)" font-family="SF Mono,Menlo,Monaco,Courier New,monospace">'
-            f'upd {time.strftime("%H:%M:%S")}</text>')
-
-
 # ── charts ────────────────────────────────────────────────────────────────────
+# Each function below builds a Series list for `charts.build_chart`. The SVG
+# envelope, freqs JSON, hover-beep overlay, gridlines, axes, and timestamp
+# all live in `charts.py` so the System and Claude tabs share one renderer.
 
 def svg_cpu_score(*, w=720, h=270):
-    pl, pr, pt, pb = 32, 36, 12, 22
-    iw = w - pl - pr; ih = h - pt - pb; n = BUF
-
-    grid = _grid(pl, pr, pt, pb, w, h, 100,
-                 (20, 40, 60, 80, 100), lambda v: f"{int(v)}%")
-
+    """Per-core CPU activity. Visuals = 8 polylines; audio = avg/max/min chord."""
     snap = [list(b) for b in CPU_BUFS]
+    n    = BUF
     avgs = [sum(snap[c][i] for c in range(_nc)) / _nc for i in range(n)]
-    # Voice per column = dominant core's index mod 3 — timbre shifts as load migrates
-    hov = _hover_rects(
-        collections.deque(avgs), pl, pr, pt, pb, w, h, 100,
-        midi_lo=52, midi_hi=76,
-        voice_fn=lambda i: max(range(_nc), key=lambda c: snap[c][i]) % 3,
+    maxs = [max(snap[c][i] for c in range(_nc))         for i in range(n)]
+    mins = [min(snap[c][i] for c in range(_nc))         for i in range(n)]
+
+    polylines = [
+        charts.Series(
+            buf     = buf,
+            label   = f"C{ci}",
+            color   = f"var(--t-c{ci % 3})",
+            dash    = DASH[ci % len(DASH)],
+            sw      = 1.5 if ci % 3 == 0 else (0.9 if ci % 3 == 1 else 1.2),
+            opacity = 0.72,
+        )
+        for ci, buf in enumerate(CPU_BUFS)
+    ]
+
+    # Hover voice tracks the dominant core so timbre shifts as load migrates.
+    dominant_voice = lambda i: max(range(_nc), key=lambda c: snap[c][i]) % 3
+    audio = [
+        charts.Series(buf=avgs, voice=0, midi_lo=52, midi_hi=76, voice_fn=dominant_voice),
+        charts.Series(buf=maxs, voice=1, midi_lo=52, midi_hi=76),
+        charts.Series(buf=mins, voice=2, midi_lo=52, midi_hi=76),
+    ]
+    return charts.build_chart(
+        polylines, audio=audio,
+        w=w, h=h, ymax=100,
+        pad=(32, 36, 12, 22),
+        grid_pcts=(20, 40, 60, 80, 100),
+        grid_fmt=lambda v: f"{int(v)}%",
     )
-
-    lines = ""
-    for ci, buf in enumerate(CPU_BUFS):
-        dash  = DASH[ci % len(DASH)]
-        color = f"var(--t-c{ci % 3})"
-        sw    = 1.5 if ci % 3 == 0 else (0.9 if ci % 3 == 1 else 1.2)
-        pts   = _make_pts(buf, pl, pr, pt, pb, w, h, 100)
-        d     = _pts_to_path(pts)
-        da    = f'stroke-dasharray="{dash}"' if dash else ""
-        lines += (f'<path d="{d}" fill="none" stroke="{color}" '
-                  f'stroke-width="{sw}" {da} opacity="0.72"/>')
-        lx, ly = pts[-1]
-        lines += (f'<text x="{lx+3}" y="{min(ly+3, h-pb-2)}" font-size="7" '
-                  f'fill="{color}" font-family="SF Mono,Menlo,Monaco,Courier New,monospace">C{ci}</text>')
-
-    # Each time step = [avg-voice0, max-core-voice1, min-core-voice2] played as a chord
-    freqs_data = json.dumps([
-        [
-            [_val_to_hz(avgs[i], 100, 52, 76), _slope_cents(avgs, i, 100), 0],
-            [_val_to_hz(max(snap[c][i] for c in range(_nc)), 100, 52, 76), _slope_cents(avgs, i, 100), 1],
-            [_val_to_hz(min(snap[c][i] for c in range(_nc)), 100, 52, 76), _slope_cents(avgs, i, 100), 2],
-        ]
-        for i, a in enumerate(avgs)
-    ])
-    return (f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
-            f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
-            f'style="width:100%;height:auto;display:block">'
-            f'{grid}{lines}{_axes(pl,pr,pt,pb,w,h)}{hov}{_stamp(w,h)}</svg>')
 
 
 def svg_dual(buf_a, buf_b, la, lb, *, w=460, h=160):
-    pl, pr, pt, pb = 56, 8, 12, 22
-    all_v = [v for v in list(buf_a) + list(buf_b) if v > 0]
-    ymax  = max(max(all_v) * 1.15, 1) if all_v else 1
-
-    grid = _grid(pl, pr, pt, pb, w, h, ymax,
-                 (25, 50, 75, 100), fmt_bytes)
-    hovA = _hover_rects(buf_a, pl, pr, pt, pb, w, h, ymax, voice=0, midi_lo=56, midi_hi=80)
-    hovB = _hover_rects(buf_b, pl, pr, pt, pb, w, h, ymax, voice=1, midi_lo=56, midi_hi=80)
-
-    vs_a = list(buf_a); vs_b = list(buf_b)
-    freqs_data = json.dumps([
-        [
-            [_val_to_hz(vs_a[i], ymax, 56, 80), _slope_cents(vs_a, i, ymax), 0],
-            [_val_to_hz(vs_b[i], ymax, 56, 80), _slope_cents(vs_b, i, ymax), 1],
-        ]
-        for i in range(len(vs_a))
-    ])
-    return (f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
-            f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
-            f'style="width:100%;height:auto;display:block">'
-            f'{grid}'
-            f'{_svg_line(buf_a,pl,pr,pt,pb,w,h,ymax,"",la,"var(--t-c0)")}'
-            f'{_svg_line(buf_b,pl,pr,pt,pb,w,h,ymax,"6,3",lb,"var(--t-c1)")}'
-            f'{_axes(pl,pr,pt,pb,w,h)}{hovA}{hovB}{_stamp(w,h)}</svg>')
+    """Two-line bytes/sec chart used by Network and Disk panels."""
+    end_label = lambda vs: fmt_bytes(vs[-1])
+    polylines = [
+        charts.Series(buf=buf_a, label=la, color="var(--t-c0)",
+                      dash="",    voice=0, midi_lo=56, midi_hi=80,
+                      opacity=0.82, label_fn=end_label),
+        charts.Series(buf=buf_b, label=lb, color="var(--t-c1)",
+                      dash="6,3", voice=1, midi_lo=56, midi_hi=80,
+                      opacity=0.82, label_fn=end_label),
+    ]
+    return charts.build_chart(
+        polylines,
+        w=w, h=h,            # ymax auto-fits to data
+        pad=(56, 8, 12, 22),
+        grid_pcts=(25, 50, 75, 100),
+        grid_fmt=fmt_bytes,
+    )
 
 
 def svg_mem(*, w=460, h=150):
-    pl, pr, pt, pb = 32, 8, 12, 22
-    hov_m = _hover_rects(MEM_BUF,  pl, pr, pt, pb, w, h, 100, voice=0, midi_lo=60, midi_hi=84)
-    hov_s = _hover_rects(SWAP_BUF, pl, pr, pt, pb, w, h, 100, voice=2, midi_lo=60, midi_hi=84)
-    grid  = _grid(pl, pr, pt, pb, w, h, 100,
-                  (25, 50, 75, 100), lambda v: f"{int(v)}%")
-
+    """RAM + swap percentage chart."""
     pct_label = lambda vs: f"{vs[-1]:.1f}%"
-    vs_m = list(MEM_BUF); vs_s = list(SWAP_BUF)
-    freqs_data = json.dumps([
-        [
-            [_val_to_hz(vs_m[i], 100, 60, 84), _slope_cents(vs_m, i, 100), 0],
-            [_val_to_hz(vs_s[i], 100, 60, 84), _slope_cents(vs_s, i, 100), 2],
-        ]
-        for i in range(len(vs_m))
-    ])
-    return (f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
-            f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{w-pl-pr}" data-w="{w}" '
-            f'style="width:100%;height:auto;display:block">'
-            f'{grid}'
-            f'{_svg_line(MEM_BUF, pl,pr,pt,pb,w,h,100,"","MEM","var(--t-c0)",0.85,pct_label)}'
-            f'{_svg_line(SWAP_BUF,pl,pr,pt,pb,w,h,100,"5,3","SWAP","var(--t-c2)",0.75,pct_label)}'
-            f'{_axes(pl,pr,pt,pb,w,h)}{hov_m}{hov_s}{_stamp(w,h)}</svg>')
+    polylines = [
+        charts.Series(buf=MEM_BUF,  label="MEM",  color="var(--t-c0)",
+                      dash="",    voice=0, midi_lo=60, midi_hi=84,
+                      opacity=0.85, label_fn=pct_label),
+        charts.Series(buf=SWAP_BUF, label="SWAP", color="var(--t-c2)",
+                      dash="5,3", voice=2, midi_lo=60, midi_hi=84,
+                      opacity=0.75, label_fn=pct_label),
+    ]
+    return charts.build_chart(
+        polylines,
+        w=w, h=h, ymax=100,
+        pad=(32, 8, 12, 22),
+        grid_pcts=(25, 50, 75, 100),
+        grid_fmt=lambda v: f"{int(v)}%",
+    )
 
 
 # ── HTML fragments ────────────────────────────────────────────────────────────
@@ -359,7 +251,7 @@ def html_gauges():
     rows = ""
     for label, pct in items:
         pct  = min(max(pct, 0), 100)
-        freq = _val_to_hz(pct, 100, 60, 84)
+        freq = charts.val_to_hz(pct, 100, 60, 84)
         rows += (
             f'<div style="margin:.5rem 0">'
             f'<div style="display:flex;justify-content:space-between;font-weight:bold">'
@@ -387,7 +279,8 @@ def html_sysinfo():
         ("",      time.strftime("%H:%M:%S")),
     ]
     return "".join(
-        f'<span style="margin-right:1rem;font-family:SF Mono,Menlo,monospace;font-size:11px">'
+        f'<span style="margin-right:1rem;font-family:SF Mono,Menlo,monospace;'
+        f'font-size:11px;white-space:nowrap">'
         f'{"<b>"+k+"</b>&nbsp;" if k else ""}{v}</span>'
         for k, v in pairs
     )
@@ -416,6 +309,47 @@ def html_proc_rows(q="", sort="cpu"):
             f'</tr>'
         )
     return rows
+
+
+def _claude_match(inst, q_low: str) -> bool:
+    """True if the query substring appears in any user-visible field of an instance.
+
+    Searches: slug, project name, cwd, model, current tool name, last prompt.
+    Case-insensitive substring on q_low (already lowercased by caller).
+    """
+    haystacks: list[str] = [
+        inst.slug or "",
+        inst.project_name or "",
+        inst.cwd or "",
+        inst.last_prompt or "",
+        inst.git_branch or "",
+    ]
+    if inst.tokens and inst.tokens.model:
+        haystacks.append(inst.tokens.model)
+    if inst.current_tool:
+        haystacks.append(inst.current_tool.name or "")
+        haystacks.append(inst.current_tool.summary or "")
+    return any(q_low in h.lower() for h in haystacks if h)
+
+
+def _claude_search_row(inst) -> str:
+    """One compact dropdown row for a Claude instance — slug-first labelling."""
+    ctx   = f"ctx {inst.tokens.context_pct:.0f}%" if inst.tokens else "—"
+    cost  = f"${inst.tokens.session_cost:.3f}" if (inst.tokens and inst.tokens.session_cost) else ""
+    model = ""
+    if inst.tokens and inst.tokens.model:
+        m = inst.tokens.model
+        model = "opus" if "opus" in m else ("sonnet" if "sonnet" in m else
+                ("haiku" if "haiku" in m else m.split("-")[1] if "-" in m else m))
+    tool = inst.current_tool.name if inst.current_tool else "idle"
+    slug = inst.slug or f"pid{inst.pid}"
+    return (
+        f'<div style="font-family:SF Mono,Menlo,monospace;font-size:11px;padding:.1rem 0">'
+        f'<span style="color:var(--t-c0);font-weight:600">{_esc(slug):<22}</span>'
+        f'&nbsp;&nbsp;{_esc(inst.project_name[:18]):<18}'
+        f'&nbsp;&nbsp;{ctx}&nbsp;&nbsp;{model}&nbsp;&nbsp;{tool}&nbsp;&nbsp;{cost}'
+        f'</div>'
+    )
 
 
 def html_search_results(q):
@@ -458,26 +392,28 @@ def html_search_results(q):
                     f'{p["pid"]:>6}&nbsp;&nbsp;{p["name"][:22]:<22}&nbsp;&nbsp;'
                     f'cpu&nbsp;{p["cpu"]:5.1f}%&nbsp;&nbsp;mem&nbsp;{p["mem"]:4.1f}%</div>')
 
-    # Claude tab results
+    # Claude instances — match against slug, project, model, current tool,
+    # and most-recent prompt so a user can find a session by any of the
+    # things they remember about it.
     claude_kws = {"claude", "context", "model", "agent", "token", "cost", "session"}
-    if any(q_low in kw or kw in q_low for kw in claude_kws) and HAS_CM:
+    keyword_hit = any(q_low in kw or kw in q_low for kw in claude_kws)
+    if HAS_CM:
         try:
             instances = _cm.find_instances()
-            if instances:
+            matched = [i for i in instances if _claude_match(i, q_low)] if instances else []
+            # Keyword search ("claude", "cost"…) always lists every instance,
+            # so the user can browse without remembering a specific slug.
+            shown = matched or (instances if keyword_hit else [])
+            if shown:
                 out += ('<div style="font-family:SF Mono,Menlo,monospace;font-size:10px;font-weight:600;'
                         'padding:.25rem 0;border-bottom:0.5px solid var(--t-border);margin-top:.2rem">'
                         'CLAUDE INSTANCES</div>')
-                for inst in instances:
-                    ctx = f"ctx {inst.tokens.context_pct:.0f}%" if inst.tokens else "—"
-                    cost = f"${inst.tokens.session_cost:.3f}" if (inst.tokens and inst.tokens.session_cost) else ""
-                    model = inst.tokens.model.split("-")[1] if (inst.tokens and inst.tokens.model and "-" in inst.tokens.model) else ""
-                    tool = inst.current_tool.name if inst.current_tool else "idle"
-                    out += (f'<div style="font-family:SF Mono,Menlo,monospace;font-size:11px;padding:.1rem 0">'
-                            f'{inst.pid:>6}&nbsp;&nbsp;{inst.project_name[:18]:<18}&nbsp;&nbsp;'
-                            f'{ctx}&nbsp;&nbsp;{model}&nbsp;&nbsp;{tool}&nbsp;&nbsp;{cost}</div>')
-            ds = _cm.daily_stats()
-            out += (f'<div style="font-family:SF Mono,Menlo,monospace;font-size:11px;padding:.1rem 0">'
-                    f'Today: ${ds.cost_today:.2f} API equiv. &middot; {ds.sessions_today} sessions</div>')
+                for inst in shown:
+                    out += _claude_search_row(inst)
+            if keyword_hit:
+                ds = _cm.daily_stats()
+                out += (f'<div style="font-family:SF Mono,Menlo,monospace;font-size:11px;padding:.1rem 0">'
+                        f'Today: ${ds.cost_today:.2f} API equiv. &middot; {ds.sessions_today} sessions</div>')
         except Exception:
             pass
 
@@ -571,7 +507,7 @@ def html_system_tab() -> str:
   <div class="card">
     <div class="card-head">
       <span class="card-title">Per-Core Activity &mdash; 60s rolling</span>
-      <button onclick="playChart('cpu-chart',this)" class="play-btn" data-chart="cpu-chart">[ PLAY ]</button>
+      """ + charts.play_button("cpu-chart") + """
       <span class="badge">every 2s</span>
     </div>
     <div class="card-body">
@@ -587,7 +523,7 @@ def html_system_tab() -> str:
     <div class="card">
       <div class="card-head">
         <span class="card-title">RAM &amp; Swap &mdash; 60s rolling</span>
-        <button onclick="playChart('mem-chart',this)" class="play-btn" data-chart="mem-chart">[ PLAY ]</button>
+        """ + charts.play_button("mem-chart") + """
         <span class="badge">every 2s</span>
       </div>
       <div class="card-body">
@@ -615,7 +551,7 @@ def html_system_tab() -> str:
     <div class="card">
       <div class="card-head">
         <span class="card-title">Network &mdash; TX / RX</span>
-        <button onclick="playChart('net-chart',this)" class="play-btn" data-chart="net-chart">[ PLAY ]</button>
+        """ + charts.play_button("net-chart") + """
         <span class="badge">every 2s</span>
       </div>
       <div class="card-body">
@@ -627,7 +563,7 @@ def html_system_tab() -> str:
     <div class="card">
       <div class="card-head">
         <span class="card-title">Disk &mdash; Read / Write</span>
-        <button onclick="playChart('disk-chart',this)" class="play-btn" data-chart="disk-chart">[ PLAY ]</button>
+        """ + charts.play_button("disk-chart") + """
         <span class="badge">every 2s</span>
       </div>
       <div class="card-body">
@@ -741,56 +677,44 @@ def _claude_chart(chart_id: str, vals: list, max_val: float, color: str,
                   label: str, voice: int = 0,
                   midi_lo: int = 56, midi_hi: int = 80,
                   w: int = 280, h: int = 80) -> str:
-    """Interactive mini-chart for Claude tab with hover-to-beep and PLAY support."""
+    """Per-instance mini-chart for the Claude tab.
+
+    Thin wrapper over `charts.build_chart` that adds the label/PLAY-button
+    chrome and the cursor-overlay anchor (`<div id=chart_id>`).
+
+    Stretchable rendering: the SVG uses preserveAspectRatio="none" plus a
+    fixed CSS height (`.claude-chart-svg`) so collapsing the grid to one
+    column on narrow widths widens charts horizontally without making them
+    grow tall. There are no SVG <text> elements, so non-uniform scaling is
+    safe (no distortion).
+    """
+    css = "score-chart claude-chart-svg"
+
     if len(vals) < 2:
-        return (f'<div class="claude-chart-wrap">'
-                f'<span class="claude-chart-label">{label}</span>'
-                f'<svg width="{w}" height="{h}" viewBox="0 0 {w} {h}" '
-                f'style="display:block;width:100%;height:auto">'
-                f'<line x1="0" y1="{h//2}" x2="{w}" y2="{h//2}" '
-                f'stroke="var(--t-border)" stroke-width="1"/></svg></div>')
-
-    pl, pr, pt, pb = 4, 4, 4, 4
-    iw = w - pl - pr; ih = h - pt - pb
-    n   = len(vals)
-    top = max(max_val, max(vals)) or 1
-
-    # polyline
-    pts_list = [(pl + int(i / (n-1) * iw),
-                 pt + ih - int(min(max(vals[i], 0), top) / top * ih))
-                for i in range(n)]
-    d = f"M{pts_list[0][0]},{pts_list[0][1]}" + "".join(
-        f" L{x},{y}" for x, y in pts_list[1:])
-
-    # hover rects
-    cw = max(1, iw // n)
-    hovers = ""
-    for i, v in enumerate(vals):
-        freq = _val_to_hz(v, top, midi_lo, midi_hi)
-        det  = _slope_cents(vals, i, top)
-        x    = pl + int(i / (n-1) * iw)
-        hovers += (f'<rect x="{x}" y="{pt}" width="{cw+1}" height="{ih}" '
-                   f'fill="transparent" style="cursor:crosshair" '
-                   f'onmouseover="window._htmxBeep&&window._htmxBeep({freq},{det},{voice})"/>')
-
-    # frequency data for PLAY
-    freqs_data = json.dumps([
-        [[_val_to_hz(vals[i], top, midi_lo, midi_hi),
-          _slope_cents(vals, i, top), voice]]
-        for i in range(n)
-    ])
-
-    svg = (f'<svg viewBox="0 0 {w} {h}" xmlns="http://www.w3.org/2000/svg" '
-           f'data-freqs=\'{freqs_data}\' data-pl="{pl}" data-iw="{iw}" data-w="{w}" '
-           f'style="display:block;width:100%;height:auto">'
-           f'<path d="{d}" fill="none" stroke="{color}" stroke-width="1.5" '
-           f'stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>'
-           f'{hovers}</svg>')
+        svg = charts.empty_chart(w=w, h=h, css_class=css, preserve_aspect="none")
+    else:
+        top = max(max_val, max(vals)) or 1
+        polylines = [
+            charts.Series(
+                buf=vals, color=color, sw=1.5, opacity=0.85,
+                voice=voice, midi_lo=midi_lo, midi_hi=midi_hi,
+            )
+        ]
+        svg = charts.build_chart(
+            polylines,
+            w=w, h=h, ymax=top,
+            pad=(4, 4, 4, 4),
+            grid_pcts=(),         # mini-charts have no grid
+            show_axes=False,
+            show_stamp=False,
+            preserve_aspect="none",
+            css_class=css,
+        )
 
     return (f'<div class="claude-chart-wrap">'
             f'<div style="display:flex;align-items:center;gap:6px;margin-bottom:2px">'
             f'<span class="claude-chart-label">{label}</span>'
-            f'<button onclick="playChart(\'{chart_id}\',this)" class="play-btn" data-chart="{chart_id}">[ PLAY ]</button>'
+            f'{charts.play_button(chart_id)}'
             f'</div>'
             f'<div id="{chart_id}" style="position:relative">{svg}</div>'
             f'</div>')
@@ -869,12 +793,16 @@ def html_claude_instances() -> str:
                             f' &mdash; {ag.tool_count} tools</div>')
             agents_html = f'<div class="agents-list">{"".join(rows)}</div>'
 
-        # ── focus button ─────────────────────────────────────────────────────
+        # ── focus button (includes TTY when available, so multiple terminals
+        #    in the same app are still distinguishable) ──────────────────────
         focus_btn = ""
         if inst.terminal_app:
+            label = _esc(inst.terminal_app)
+            if inst.terminal_tty:
+                label += f'&nbsp;{_esc(inst.terminal_tty)}'
             focus_btn = (f'<button class="focus-btn" '
                          f'hx-post="/claude/focus/{inst.pid}" hx-swap="none" '
-                         f'title="Focus {inst.terminal_app}">&#8594; {_esc(inst.terminal_app)}</button>')
+                         f'title="Focus {_esc(inst.terminal_app)}">&#8594; {label}</button>')
 
         # ── branch/version badge ──────────────────────────────────────────────
         meta = []
@@ -882,6 +810,22 @@ def html_claude_instances() -> str:
         if inst.version:      meta.append(f'v{_esc(inst.version)}')
         if model_short:       meta.append(model_short)
         meta_html = ' &middot; '.join(meta)
+
+        # ── slug + last prompt: main per-instance differentiators ────────────
+        # When multiple claude instances share a directory, project_name and
+        # cwd collide. The slug (a memorable handle Claude assigns each
+        # session) and the last user prompt make each card unique at a glance.
+        slug_html = ""
+        if inst.slug:
+            slug_html = (f'<span class="claude-slug" title="session slug">'
+                         f'{_esc(inst.slug)}</span>')
+        prompt_html = ""
+        if inst.last_prompt:
+            text = inst.last_prompt.strip().replace('\n', ' ')
+            if len(text) > 140:
+                text = text[:137] + "…"
+            prompt_html = (f'<div class="claude-prompt" title="{_esc(inst.last_prompt)}">'
+                           f'&ldquo;{_esc(text)}&rdquo;</div>')
 
         # interactive charts with PLAY
         pid = inst.pid
@@ -901,10 +845,12 @@ def html_claude_instances() -> str:
         parts.append(f'''<div class="claude-instance">
   <div class="claude-head">
     <strong style="font-size:12px">{_esc(inst.project_name)}</strong>
+    {slug_html}
     <span style="font-size:10px;color:var(--t-muted)">{_esc(inst.cwd)}</span>
     <span style="font-size:10px;color:var(--t-muted);margin-left:auto">{meta_html}</span>
     {focus_btn}
   </div>
+  {prompt_html}
   <div class="claude-body">
     <div class="claude-stat">pid <span>{inst.pid}</span> &middot; up <span>{_uptime_str(inst.uptime_s)}</span></div>
     <div class="claude-stat">context: {ctx_html}</div>
@@ -1084,9 +1030,11 @@ function _getCursor(chartId){
     var el=document.getElementById(chartId);if(!el)return null;
     var wrap=el.parentElement;
     if(getComputedStyle(wrap).position==='static')wrap.style.position='relative';
-    c=document.createElement('div');c.id=id;
-    c.style.cssText='display:none;position:absolute;top:0;bottom:0;width:1px;'+
-      'background:#fff;opacity:0.5;pointer-events:none;z-index:10;';
+    // Confine the cursor's mix-blend-mode:difference blending to this wrap's
+    // contents only — otherwise it blends against ancestor backdrops and the
+    // result depends on whatever's elsewhere on the page.
+    wrap.style.isolation='isolate';
+    c=document.createElement('div');c.id=id;c.className='chart-cursor';
     wrap.appendChild(c);
   }
   return c;
@@ -1243,9 +1191,19 @@ html,body{
   display:flex;align-items:center;gap:.8rem;
   position:sticky;top:0;z-index:100;
   -webkit-app-region:drag;
+  overflow:hidden;
 }
-.menubar-apple{font-size:15px;font-weight:bold}
+.menubar-apple{font-size:15px;font-weight:bold;flex-shrink:0}
 .menubar input,.menubar button,.menubar label{-webkit-app-region:no-drag}
+/* Right-hand BPM/LOOP/sysinfo group: clip rather than wrap on narrow widths */
+.menubar-right{
+  margin-left:auto;display:flex;align-items:center;gap:.5rem;
+  min-width:0;overflow:hidden;
+}
+.menubar-sysinfo{
+  min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;
+  flex:0 1 auto;
+}
 
 /* (search styles now in .search-row block) */
 #search-drop{
@@ -1425,9 +1383,33 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 .claude-chart-wrap{min-width:0}
 .claude-chart-label{font-size:9px;font-weight:600;text-transform:uppercase;
   letter-spacing:.05em;color:var(--t-muted)}
+/* Default sizing for every chart built by charts.build_chart. System-tab
+   charts inherit aspect ratio from the viewBox; Claude charts override
+   below to flex horizontally with a fixed height. */
+.score-chart{display:block;width:100%;height:auto}
+.claude-chart-svg{height:56px}
+
+/* Play-position cursor. mix-blend-mode:difference inverts whatever pixels
+   are underneath it, so a single rule works against every theme — light
+   or dark, solid or gradient — without per-theme bookkeeping. */
+.chart-cursor{
+  display:none;position:absolute;top:0;bottom:0;width:2px;
+  background:#fff;mix-blend-mode:difference;
+  pointer-events:none;z-index:10;
+}
 .agents-list{margin-top:.4rem;font-size:11px}
 .agent-row{padding:.15rem 0;border-bottom:0.5px solid var(--t-border);color:var(--t-muted)}
 .agent-row span{color:var(--t-fg)}
+.claude-slug{
+  font-size:10px;color:var(--t-c0);font-weight:600;
+  padding:1px 6px;border:0.5px solid var(--t-c0);border-radius:2px;
+  letter-spacing:.02em;
+}
+.claude-prompt{
+  font-size:10px;color:var(--t-muted);font-style:italic;
+  padding:.35rem 1rem .15rem;border-bottom:0.5px solid var(--t-border);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
 
 </style>
 </head>
@@ -1437,7 +1419,7 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
 <div class="menubar">
   <div class="menubar-apple">&#63743;</div>
   <span style="font-size:10px;font-weight:bold;letter-spacing:.06em">MAC MONITOR</span>
-  <span style="margin-left:auto;display:flex;align-items:center;gap:.5rem">
+  <span class="menubar-right">
     <label style="font-size:10px;font-weight:bold">BPM</label>
     <input type="number" id="bpm-input" value="300" min="20" max="600"
            style="width:52px;border:1px solid var(--t-border);padding:0 4px;font-family:inherit;
@@ -1445,7 +1427,7 @@ button:hover{border-color:var(--t-accent);color:var(--t-fg);}
     <label style="font-size:10px;font-weight:bold;display:flex;align-items:center;gap:3px;cursor:pointer">
       <input type="checkbox" id="loop-toggle" style="accent-color:var(--t-accent)">LOOP
     </label>
-    <span hx-get="/metrics/sysinfo" hx-trigger="load, every 5s"
+    <span class="menubar-sysinfo" hx-get="/metrics/sysinfo" hx-trigger="load, every 5s"
           hx-target="this" hx-swap="innerHTML"></span>
   </span>
 </div>

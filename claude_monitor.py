@@ -162,6 +162,8 @@ class ClaudeInstance:
     version:      str | None
     git_branch:   str | None
     session_id:   str | None
+    slug:         str | None     # human-friendly handle (e.g. "linear-puzzling-hare")
+    last_prompt:  str | None     # most recent user prompt, for at-a-glance context
     terminal_app: str | None
     terminal_tty: str | None
     current_tool: ToolCall | None
@@ -189,6 +191,11 @@ class DailyStats:
 _proc_cache: dict[int, "psutil.Process"] = {}
 _cpu_readings: dict[int, float]          = {}
 
+# Stable per-pid → JSONL mapping. Without this, multiple claude instances
+# running in the same cwd all map to the most-recent JSONL in the project
+# directory and end up displaying identical context usage.
+_pid_jsonl_cache: dict[int, Path] = {}
+
 
 # ── public API ────────────────────────────────────────────────────────────────
 
@@ -205,8 +212,9 @@ def find_instances() -> list[ClaudeInstance]:
             del _proc_cache[pid]
             _cpu_readings.pop(pid, None)
 
-    # 2. Discover current instances.
-    instances  = []
+    # 2. Discover live claude processes (no instance built yet — we need to
+    #    pair each process to its JSONL before reading session state).
+    claude_procs: list = []
     seen_pids: set[int] = set()
     for proc in psutil.process_iter(['pid', 'name', 'cmdline', 'create_time',
                                       'cpu_percent', 'memory_info', 'status']):
@@ -222,7 +230,7 @@ def find_instances() -> list[ClaudeInstance]:
                 _proc_cache[pid] = proc
                 proc.cpu_percent()
                 _cpu_readings[pid] = 0.0
-            instances.append(_build_instance(proc, cpu=_cpu_readings.get(pid, 0.0)))
+            claude_procs.append(proc)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
 
@@ -231,6 +239,29 @@ def find_instances() -> list[ClaudeInstance]:
         if pid not in seen_pids:
             del _proc_cache[pid]
             _cpu_readings.pop(pid, None)
+    for pid in list(_pid_jsonl_cache):
+        if pid not in seen_pids:
+            del _pid_jsonl_cache[pid]
+
+    # 4. Pair each process with a distinct JSONL. This is what keeps two
+    #    claude instances in the same cwd from showing identical context.
+    from collections import defaultdict
+    by_cwd: dict[str, list] = defaultdict(list)
+    for proc in claude_procs:
+        try:
+            by_cwd[proc.cwd()].append(proc)
+        except Exception:
+            pass
+    for cwd, procs in by_cwd.items():
+        _assign_jsonls_for_cwd(cwd, procs)
+
+    # 5. Build instances using the resolved per-pid JSONL.
+    instances = []
+    for proc in claude_procs:
+        try:
+            instances.append(_build_instance(proc, cpu=_cpu_readings.get(proc.pid, 0.0)))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
 
     return instances
 
@@ -413,17 +444,29 @@ def _build_instance(proc, cpu: float = 0.0) -> ClaudeInstance:
         uptime_s = 0
 
     terminal_app, terminal_tty = _detect_terminal(proc.pid)
-    jsonl_path, session_dir    = _match_session(cwd)
-    entries                    = _tail_jsonl(jsonl_path) if jsonl_path else []
+    jsonl_path = _pid_jsonl_cache.get(proc.pid)
+    if jsonl_path is not None:
+        session_dir = jsonl_path.parent
+    else:
+        # Cache miss (cwd lookup failed earlier) — fall back to legacy behavior.
+        jsonl_path, session_dir = _match_session(cwd)
+    entries = _tail_jsonl(jsonl_path) if jsonl_path else []
 
-    # Pull metadata from first few entries
+    # Pull metadata from the tail. version/branch/session_id/slug appear on
+    # most entries; the slug is the per-instance differentiator we want.
     version    = None
     git_branch = None
     session_id = None
-    for e in entries[:10]:
-        version    = version    or e.get('version')
-        git_branch = git_branch or e.get('gitBranch')
-        session_id = session_id or e.get('sessionId')
+    slug       = None
+    for e in entries:
+        version     = version     or e.get('version')
+        git_branch  = git_branch  or e.get('gitBranch')
+        session_id  = session_id  or e.get('sessionId')
+        slug        = e.get('slug') or slug
+
+    # Most recent real user prompt — scanned with a wider window because
+    # they're sparse compared to assistant/tool entries.
+    last_prompt = _last_user_prompt(jsonl_path) if jsonl_path else None
 
     current_tool, tool_ts = _current_tool(entries)
     recent_tools           = _recent_tools(entries)
@@ -441,6 +484,8 @@ def _build_instance(proc, cpu: float = 0.0) -> ClaudeInstance:
         version      = version,
         git_branch   = git_branch,
         session_id   = session_id,
+        slug         = slug,
+        last_prompt  = last_prompt,
         terminal_app = terminal_app,
         terminal_tty = terminal_tty,
         current_tool = current_tool,
@@ -452,6 +497,116 @@ def _build_instance(proc, cpu: float = 0.0) -> ClaudeInstance:
 
 
 # ── JSONL helpers ─────────────────────────────────────────────────────────────
+
+def _safe_create_time(proc) -> float:
+    try:
+        return proc.create_time()
+    except Exception:
+        return 0.0
+
+
+def _jsonl_first_ts(path: Path) -> float | None:
+    """Earliest entry timestamp (epoch seconds) in a JSONL, or None.
+
+    Used to estimate when a session was started so we can pair processes
+    to their session files. Reads only the first few lines.
+    """
+    import datetime
+    try:
+        with open(path, 'rb') as f:
+            for _ in range(8):
+                line = f.readline()
+                if not line:
+                    break
+                try:
+                    e = json.loads(line)
+                except Exception:
+                    continue
+                ts = e.get('timestamp')
+                if ts:
+                    try:
+                        return datetime.datetime.fromisoformat(
+                            ts.replace('Z', '+00:00')).timestamp()
+                    except Exception:
+                        return None
+    except Exception:
+        pass
+    return None
+
+
+def _assign_jsonls_for_cwd(cwd: str, procs: list) -> None:
+    """Pair each running claude process in `cwd` to a distinct JSONL.
+
+    Two claude instances in the same directory both resolve to the same
+    project dir; without per-pid disambiguation they would share whichever
+    file has the most recent mtime, so the monitor would show identical
+    context usage for both.
+
+    Strategy:
+      1. Keep any cached pid→jsonl assignment that still points at a real file.
+      2. For unassigned pids, greedily match to an unclaimed JSONL whose
+         first-entry timestamp is closest to the process's create_time
+         (handles --resume too: a resumed session's first entry timestamp
+         is far in the past, but so is no other candidate, so the closest
+         match still wins).
+    """
+    sanitized   = cwd.replace('/', '-')
+    session_dir = _PROJECTS / sanitized
+    if not session_dir.exists():
+        return
+
+    jsonls = sorted(
+        (f for f in session_dir.glob('*.jsonl') if f.parent == session_dir),
+        key=lambda p: p.stat().st_mtime, reverse=True
+    )
+    if not jsonls:
+        return
+    jsonl_set = set(jsonls)
+
+    # Drop stale cache entries (file deleted) for this group's pids.
+    for proc in procs:
+        cached = _pid_jsonl_cache.get(proc.pid)
+        if cached is not None and cached not in jsonl_set:
+            del _pid_jsonl_cache[proc.pid]
+
+    claimed = {_pid_jsonl_cache[p.pid]
+               for p in procs if p.pid in _pid_jsonl_cache}
+    pending = [p for p in procs if p.pid not in _pid_jsonl_cache]
+    if not pending:
+        return
+
+    # Single-process common case — just hand over the newest unclaimed file.
+    if len(procs) == 1:
+        for j in jsonls:
+            if j not in claimed:
+                _pid_jsonl_cache[procs[0].pid] = j
+                return
+        return
+
+    # Multi-process: match by proximity of session-start to process-start.
+    # Limit candidates to a small window of the most-recent JSONLs to keep
+    # the work bounded when a project has hundreds of historical sessions.
+    candidates: list[tuple[Path, float]] = []
+    for j in jsonls[: max(len(procs) * 3, 8)]:
+        if j in claimed:
+            continue
+        ts = _jsonl_first_ts(j)
+        if ts is None:
+            try: ts = j.stat().st_mtime
+            except Exception: ts = 0.0
+        candidates.append((j, ts))
+
+    # Newest processes first — they're most likely to own the newest JSONL.
+    pending.sort(key=lambda p: -_safe_create_time(p))
+    for proc in pending:
+        if not candidates:
+            break
+        ct = _safe_create_time(proc)
+        best_idx = min(range(len(candidates)),
+                       key=lambda i: abs(candidates[i][1] - ct))
+        j, _ = candidates.pop(best_idx)
+        _pid_jsonl_cache[proc.pid] = j
+
 
 def _match_session(cwd: str) -> tuple[Path | None, Path | None]:
     """Map a working directory to its most-recent top-level JSONL file."""
@@ -467,6 +622,63 @@ def _match_session(cwd: str) -> tuple[Path | None, Path | None]:
         return (jsonls[0] if jsonls else None), session_dir
     except Exception:
         return None, None
+
+
+_prompt_cache: dict[Path, tuple[float, str | None]] = {}
+
+def _last_user_prompt(path: Path) -> str | None:
+    """Most recent real user prompt in a JSONL session file.
+
+    Filters out tool-result messages (which also carry promptId), meta
+    entries, slash-command stdout, and system-injected tags so what's
+    returned matches what the user actually typed.
+
+    Walks the full file because user prompts are sparse — a single
+    assistant turn can be megabytes, so any tail-based scan misses them.
+    Cached by file mtime so the walk only runs when the session advances.
+    """
+    try:
+        mtime = path.stat().st_mtime
+    except Exception:
+        return None
+    cached = _prompt_cache.get(path)
+    if cached and cached[0] == mtime:
+        return cached[1]
+
+    latest: str | None = None
+    try:
+        with open(path, 'rb') as f:
+            for raw in f:
+                # Cheap byte pre-filter — most lines are assistant messages.
+                if b'"user"' not in raw:
+                    continue
+                try:
+                    e = json.loads(raw)
+                except Exception:
+                    continue
+                if e.get('type') != 'user' or e.get('isMeta'):
+                    continue
+                if not e.get('promptId'):
+                    continue
+                content = e.get('message', {}).get('content', '')
+                text = ''
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    # Look specifically for a text item — content lists that
+                    # contain tool_result items are tool responses, not prompts.
+                    for c in content:
+                        if isinstance(c, dict) and c.get('type') == 'text':
+                            text = c.get('text', '')
+                            break
+                text = text.strip()
+                if not text or text[0] == '<' or text.startswith('[Request'):
+                    continue
+                latest = text
+    except Exception:
+        pass
+    _prompt_cache[path] = (mtime, latest)
+    return latest
 
 
 def _tail_jsonl(path: Path, n_kb: int = 12) -> list[dict]:
